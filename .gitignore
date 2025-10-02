@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# 虚拟环境
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 项目数据
+data/
+*.log
+
+# 缓存文件（可选：如果想提交缓存文件，可以删除下面这行）
+# data/maimai_cache/
+
+# 环境配置
+.env
+.env.prod
+.env.dev
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
