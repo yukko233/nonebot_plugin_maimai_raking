@@ -40,6 +40,9 @@ env/
 data/
 *.log
 
+# API 文档（开发用）
+diving-fish-api.md
+
 # 缓存文件（可选：如果想提交缓存文件，可以删除下面这行）
 # data/maimai_cache/
 
