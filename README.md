@@ -104,13 +104,6 @@ Bot: ✅ 已成功为用户 123456789 加入排行榜！
      Rating: 13800
 ```
 
-## 技术特性
-
-- 🎯 **精确匹配**：支持歌曲名精确匹配、别名匹配、模糊匹配等多种查询方式
-- 🎨 **精美渲染**：使用 Pillow 生成高质量排行榜图片，支持自定义字体
-- 📦 **数据持久化**：使用 JSON 文件存储群组配置和用户数据
-- ⚡ **异步设计**：全异步实现，高效处理并发请求
-- 🛡️ **错误处理**：完善的异常处理和日志记录
 
 ## 注意事项
 
@@ -140,29 +133,9 @@ MIT License
   - `alias_data.json` - 别名数据缓存
   - `covers/` - 歌曲封面缓存
 
-## 自定义字体
-
-插件支持自定义字体，将 `.ttf` 或 `.ttc` 字体文件放置在 `nonebot_plugin_maimai_raking/fonts/` 目录下即可自动加载。
-
-推荐使用支持完整 Unicode 的字体，如：
-- Noto Sans CJK SC
-- Microsoft YaHei UI
-- Segoe UI Emoji
 
 ## 相关链接
 
 - [NoneBot2 文档](https://nonebot.dev/)
 - [水鱼查分器](https://www.diving-fish.com/maimaidx/prober/)
 - [舞萌 DX 别名库](https://www.yuzuchan.moe/mai/alias)
-
-## 开发说明
-
-本插件是一个标准的 NoneBot2 插件，入口文件为 `nonebot_plugin_maimai_raking/__init__.py`。
-
-主要模块：
-- `__init__.py` - 插件主入口，命令处理和定时任务
-- `api.py` - 水鱼 API 对接，歌曲查询和别名处理
-- `database.py` - 数据库操作，群组和用户管理
-- `render.py` - 图片渲染，生成排行榜图片
-- `config.py` - 配置管理
-
