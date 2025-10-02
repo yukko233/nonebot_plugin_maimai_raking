@@ -139,3 +139,5 @@ MIT License
 - [NoneBot2 文档](https://nonebot.dev/)
 - [水鱼查分器](https://www.diving-fish.com/maimaidx/prober/)
 - [舞萌 DX 别名库](https://www.yuzuchan.moe/mai/alias)
+
+## 本项目由AI辅助编写
