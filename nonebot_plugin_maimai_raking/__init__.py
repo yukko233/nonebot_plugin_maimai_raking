@@ -51,26 +51,49 @@ config = get_plugin_config(Config)
 db = Database(config.maimai_data_path)
 api = MaimaiAPI(config.maimai_developer_token)
 
+# 群昵称缓存
+group_nickname_cache: dict = {}
+
 async def get_group_nickname(bot: Bot, qq: str, group_id: str) -> str:
-    """获取群内昵称（每次查询时实时获取）"""
-    try:
-        # 先尝试获取群成员信息（包含群名片）
-        member_info = await bot.get_group_member_info(group_id=int(group_id), user_id=int(qq))
-        # 群名片（card）优先，如果没有则使用QQ昵称（nickname）
-        nickname = member_info.get("card") or member_info.get("nickname", qq)
-        if not nickname.strip():  # 如果群名片为空字符串，使用QQ昵称
-            nickname = member_info.get("nickname", qq)
-        return nickname
-    except Exception as e:
-        logger.warning(f"获取群 {group_id} 中用户 {qq} 的群内昵称失败: {e}")
-        # 如果获取群成员信息失败，尝试获取QQ昵称作为备用
+    """获取群内昵称（从缓存中获取）"""
+    cache_key = f"{group_id}_{qq}"
+    return group_nickname_cache.get(cache_key, qq)
+
+async def update_group_nicknames(bot: Bot, group_id: str):
+    """更新指定群的所有排行榜用户昵称"""
+    users = db.get_group_users(group_id)
+    if not users:
+        return
+    
+    logger.info(f"开始更新群 {group_id} 的 {len(users)} 个用户昵称")
+    success_count = 0
+    
+    for qq in users:
         try:
-            info = await bot.get_stranger_info(user_id=int(qq))
-            nickname = info.get("nickname", qq)
-            return nickname
-        except Exception as e2:
-            logger.warning(f"获取QQ {qq} 昵称也失败: {e2}")
-            return qq
+            # 获取群成员信息
+            member_info = await bot.get_group_member_info(group_id=int(group_id), user_id=int(qq))
+            # 群名片（card）优先，如果没有则使用QQ昵称（nickname）
+            nickname = member_info.get("card") or member_info.get("nickname", qq)
+            if not nickname.strip():  # 如果群名片为空字符串，使用QQ昵称
+                nickname = member_info.get("nickname", qq)
+            
+            # 更新缓存
+            cache_key = f"{group_id}_{qq}"
+            group_nickname_cache[cache_key] = nickname
+            success_count += 1
+        except Exception as e:
+            logger.warning(f"更新群 {group_id} 中用户 {qq} 的昵称失败: {e}")
+            # 如果获取群成员信息失败，尝试获取QQ昵称作为备用
+            try:
+                info = await bot.get_stranger_info(user_id=int(qq))
+                nickname = info.get("nickname", qq)
+                cache_key = f"{group_id}_{qq}"
+                group_nickname_cache[cache_key] = nickname
+                success_count += 1
+            except Exception as e2:
+                logger.warning(f"获取QQ {qq} 昵称也失败: {e2}")
+    
+    logger.info(f"群 {group_id} 昵称更新完成，成功: {success_count}/{len(users)}")
 
 # ==================== 管理员命令 ====================
 
@@ -518,6 +541,35 @@ async def auto_update_alias():
         logger.error(f"自动更新别名数据时出错: {e}")
 
 
+@scheduler.scheduled_job("interval", minutes=5, id="maimai_auto_update_nicknames")
+async def auto_update_nicknames():
+    """每5分钟自动更新所有群的用户昵称"""
+    logger.info("开始自动更新用户昵称...")
+    
+    try:
+        # 获取所有启用的群
+        enabled_groups = db.get_all_enabled_groups()
+        if not enabled_groups:
+            logger.info("没有启用的群，跳过昵称更新")
+            return
+        
+        # 获取bot实例
+        from nonebot import get_bot
+        try:
+            bot = get_bot()
+        except Exception as e:
+            logger.error(f"获取bot实例失败: {e}")
+            return
+        
+        # 更新每个群的昵称
+        for group_id in enabled_groups:
+            await update_group_nicknames(bot, group_id)
+        
+        logger.info(f"昵称更新完成，共处理 {len(enabled_groups)} 个群")
+    except Exception as e:
+        logger.error(f"自动更新昵称时出错: {e}")
+
+
 # ==================== 启动和关闭事件 ====================
 
 @driver.on_startup
@@ -528,6 +580,20 @@ async def _():
     await api.load_music_data()
     await api.load_alias_data()
     logger.info("歌曲数据和别名数据加载完成")
+    
+    # 初始化所有启用群的用户昵称缓存
+    try:
+        from nonebot import get_bot
+        bot = get_bot()
+        enabled_groups = db.get_all_enabled_groups()
+        logger.info(f"开始初始化 {len(enabled_groups)} 个群的用户昵称缓存")
+        
+        for group_id in enabled_groups:
+            await update_group_nicknames(bot, group_id)
+        
+        logger.info("用户昵称缓存初始化完成")
+    except Exception as e:
+        logger.warning(f"初始化用户昵称缓存失败: {e}")
 
 
 @driver.on_shutdown

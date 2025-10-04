@@ -122,6 +122,14 @@ class Database:
         """获取所有用户"""
         return list(self.users.keys())
     
+    def get_all_enabled_groups(self) -> List[str]:
+        """获取所有启用的群组"""
+        enabled_groups = []
+        for group_id, group_data in self.groups.items():
+            if group_data.get("enabled", False):
+                enabled_groups.append(group_id)
+        return enabled_groups
+    
     # ==================== 成绩管理 ====================
     
     def update_user_records(self, qq: str, records: dict):
