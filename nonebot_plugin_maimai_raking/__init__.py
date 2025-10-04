@@ -34,7 +34,8 @@ __plugin_meta__ = PluginMetadata(
     用户命令：
     - 加入排行榜 [QQ号]
     - 退出排行榜
-    - wmrk <歌曲名/别名/ID>
+    - wmrk <歌曲名/别名/ID> [难度]
+    - wmbm <歌曲名/别名/ID>
     """,
     type="application",
     homepage="https://github.com/yourusername/nonebot-plugin-maimai-raking",
@@ -50,15 +51,8 @@ config = get_plugin_config(Config)
 db = Database(config.maimai_data_path)
 api = MaimaiAPI(config.maimai_developer_token)
 
-# 缓存群内昵称
-group_nickname_cache: dict = {}
-
 async def get_group_nickname(bot: Bot, qq: str, group_id: str) -> str:
-    """获取群内昵称"""
-    cache_key = f"{group_id}_{qq}"
-    if cache_key in group_nickname_cache:
-        return group_nickname_cache[cache_key]
-    
+    """获取群内昵称（每次查询时实时获取）"""
     try:
         # 先尝试获取群成员信息（包含群名片）
         member_info = await bot.get_group_member_info(group_id=int(group_id), user_id=int(qq))
@@ -66,7 +60,6 @@ async def get_group_nickname(bot: Bot, qq: str, group_id: str) -> str:
         nickname = member_info.get("card") or member_info.get("nickname", qq)
         if not nickname.strip():  # 如果群名片为空字符串，使用QQ昵称
             nickname = member_info.get("nickname", qq)
-        group_nickname_cache[cache_key] = nickname
         return nickname
     except Exception as e:
         logger.warning(f"获取群 {group_id} 中用户 {qq} 的群内昵称失败: {e}")
@@ -74,7 +67,6 @@ async def get_group_nickname(bot: Bot, qq: str, group_id: str) -> str:
         try:
             info = await bot.get_stranger_info(user_id=int(qq))
             nickname = info.get("nickname", qq)
-            group_nickname_cache[cache_key] = nickname
             return nickname
         except Exception as e2:
             logger.warning(f"获取QQ {qq} 昵称也失败: {e2}")
@@ -310,6 +302,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
 
 
 query_ranking = on_command("wmrk", priority=10, block=True)
+query_song_info = on_command("wmbm", priority=10, block=True)
 
 @query_ranking.handle()
 async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
@@ -358,7 +351,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
         return
     
     if not song:
-        await query_ranking.finish(f"❌ 未找到歌曲: {song_query}")
+        await query_ranking.finish("❌ 未找到歌曲")
         return
     
     song_id = int(song["id"])  # 确保转换为整数
@@ -413,6 +406,9 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     # 按成绩排序（降序）
     ranking_data.sort(key=lambda x: -x["achievements"])
     
+    # 限制显示前20名
+    ranking_data = ranking_data[:20]
+    
     # 生成排行榜图片
     try:
         image_bytes = await render_ranking_image(song, ranking_data, api)
@@ -423,6 +419,65 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     
     msg = MessageSegment.image(image_bytes)
     await query_ranking.finish(msg)
+
+
+@query_song_info.handle()
+async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
+    """查询歌曲信息（名称、ID、别名）"""
+    group_id = str(event.group_id)
+    
+    if not db.is_group_enabled(group_id):
+        await query_song_info.finish("本群未开启舞萌排行榜功能！")
+        return
+    
+    query = args.extract_plain_text().strip()
+    if not query:
+        await query_song_info.finish("请输入歌曲名称、别名或 ID！\n例如: wmbm 群青")
+        return
+    
+    # 获取歌曲信息
+    try:
+        song = await api.find_song(query)
+    except Exception as e:
+        logger.error(f"查找歌曲时出错: {e}")
+        await query_song_info.finish("❌ 查询失败，请稍后重试！")
+        return
+    
+    if not song:
+        await query_song_info.finish("❌ 未找到歌曲，请检查歌曲名称或尝试其他关键词")
+        return
+    
+    song_id = int(song["id"])
+    song_title = song["title"]
+    song_type = song.get("type", "DX")
+    
+    # 查找该歌曲的所有别名
+    aliases = []
+    for alias_item in api.alias_data:
+        if "SongID" in alias_item and alias_item["SongID"] == song_id:
+            if "Alias" in alias_item and isinstance(alias_item["Alias"], list):
+                aliases.extend(alias_item["Alias"])
+    
+    # 去重并排序
+    aliases = sorted(list(set(aliases)))
+    
+    # 构建返回消息
+    result = f"🎵 歌曲信息\n"
+    result += f"📝 名称: {song_title}\n"
+    result += f"🆔 ID: {song_id}\n"
+    # 显示谱面类型，将SD改为标准
+    type_display = "DX谱面" if song_type == "DX" else "标准谱面"
+    result += f"📊 类型: {type_display}\n"
+    
+    if aliases:
+        result += f"🏷️ 别名 ({len(aliases)}个):\n"
+        # 每个别名单独一行
+        for alias in aliases:
+            result += f"{alias}\n"
+    else:
+        result += "🏷️ 别名: 暂无别名\n"
+    
+    await query_song_info.finish(result)
 
 
 # ==================== 定时任务 ====================

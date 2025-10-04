@@ -55,7 +55,7 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     """
     # 图片尺寸
     width = 850
-    header_height = 260  # 增加高度以容纳所有难度定数显示
+    header_height = 240 # 增加高度以容纳所有难度定数显示
     row_height = 70
     footer_height = 70
     table_header_height = 50
@@ -106,7 +106,7 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     draw.rectangle([(0, 0), (width, header_height)], fill=bg_color)
     
     # 获取并绘制歌曲封面（简洁风格）
-    cover_size = 180  # 封面大小（增大以与右边信息区域平齐）
+    cover_size = 197 # 封面大小（增大以与右边信息区域平齐）
     cover_x = 25      # 封面X位置
     cover_y = 25      # 封面Y位置
     
@@ -145,14 +145,19 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     # 深色文字，无阴影
     draw.text((title_x, title_y), song_title, font=font_title, fill=(40, 40, 40), anchor="lm")
     
+    # 绘制歌曲ID（在标题下方）
+    song_id = song.get("id", "未知")
+    id_y = title_y + 40
+    draw.text((title_x, id_y), f"ID: {song_id}", font=font_small, fill=(120, 120, 140), anchor="lm")
+    
     # 绘制类型标签和版本标签（参考图片风格）
-    tags_row1_y = title_y + 50
+    tags_row1_y = title_y + 70  # 增加间距以容纳ID
     tag_x = info_x
     tag_height = 32
     gap = 10
     
     # 类型标签（如"DX谱面"）
-    type_text = "DX谱面" if song_type == "DX" else "SD谱面"
+    type_text = "DX谱面" if song_type == "DX" else "标准谱面"
     type_bg = (255, 228, 225) if song_type == "DX" else (230, 240, 255)
     type_text_color = (220, 100, 100) if song_type == "DX" else (100, 150, 220)
     
