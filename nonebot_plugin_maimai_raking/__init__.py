@@ -30,12 +30,14 @@ __plugin_meta__ = PluginMetadata(
     - 开启舞萌排行榜
     - 关闭舞萌排行榜
     - 刷新排行榜
+    - 刷新群昵称
     
     用户命令：
     - 加入排行榜 [QQ号]
     - 退出排行榜
     - wmrk <歌曲名/别名/ID> [难度]
     - wmbm <歌曲名/别名/ID>
+    - wmrt - 查看本群 Rating 排行榜
     """,
     type="application",
     homepage="https://github.com/yourusername/nonebot-plugin-maimai-raking",
@@ -170,6 +172,37 @@ async def _(bot: Bot, event: GroupMessageEvent):
     await refresh_ranking.finish(msg)
 
 
+refresh_nicknames = on_command(
+    "刷新群昵称",
+    permission=SUPERUSER | GROUP_ADMIN | GROUP_OWNER,
+    priority=5,
+    block=True,
+)
+
+@refresh_nicknames.handle()
+async def _(bot: Bot, event: GroupMessageEvent):
+    """手动刷新群昵称"""
+    group_id = str(event.group_id)
+    
+    if not db.is_group_enabled(group_id):
+        await refresh_nicknames.finish("本群未开启舞萌排行榜功能！")
+        return
+    
+    users = db.get_group_users(group_id)
+    if not users:
+        await refresh_nicknames.finish("本群暂无用户加入排行榜！")
+        return
+    
+    await refresh_nicknames.send(f"正在刷新群昵称，共 {len(users)} 位用户...")
+    
+    try:
+        await update_group_nicknames(bot, group_id)
+        await refresh_nicknames.finish("✅ 群昵称刷新完成！")
+    except Exception as e:
+        logger.error(f"刷新群昵称失败: {e}")
+        await refresh_nicknames.finish("❌ 刷新群昵称失败，请稍后重试！")
+
+
 # ==================== 用户命令 ====================
 
 join_ranking = on_command("加入排行榜", priority=10, block=True)
@@ -254,6 +287,13 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     nickname = records.get("nickname", "未知")
     rating = records.get("rating", 0)
     
+    # 自动刷新该群所有成员的群昵称
+    try:
+        await update_group_nicknames(bot, group_id)
+        logger.info(f"用户 {qq} 加入排行榜后，已自动刷新群 {group_id} 的所有成员昵称")
+    except Exception as e:
+        logger.warning(f"自动刷新群昵称失败: {e}")
+    
     if qq == user_id:
         await join_ranking.finish(
             f"✅ 已成功加入排行榜！\n"
@@ -326,6 +366,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
 
 query_ranking = on_command("wmrk", priority=10, block=True)
 query_song_info = on_command("wmbm", priority=10, block=True)
+query_rating_ranking = on_command("wmrt", priority=10, block=True)
 
 @query_ranking.handle()
 async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
@@ -501,6 +542,81 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
         result += "🏷️ 别名: 暂无别名\n"
     
     await query_song_info.finish(result)
+
+
+@query_rating_ranking.handle()
+async def _(bot: Bot, event: GroupMessageEvent):
+    """查询群内 Rating 排行榜"""
+    group_id = str(event.group_id)
+    
+    if not db.is_group_enabled(group_id):
+        await query_rating_ranking.finish("本群未开启舞萌排行榜功能！")
+        return
+    
+    # 获取群内用户
+    users = db.get_group_users(group_id)
+    if not users:
+        await query_rating_ranking.finish("本群暂无用户加入排行榜！")
+        return
+    
+    # 收集用户 Rating 数据
+    rating_data = []
+    for qq in users:
+        records = db.get_user_records(qq)
+        if not records:
+            continue
+        
+        rating = records.get("rating", 0)
+        nickname = records.get("nickname", "未知")
+        
+        # 获取群内昵称
+        group_nickname = await get_group_nickname(bot, qq, group_id)
+        
+        rating_data.append({
+            "qq": qq,
+            "nickname": group_nickname,
+            "maimai_nickname": nickname,
+            "rating": rating
+        })
+    
+    if not rating_data:
+        await query_rating_ranking.finish("本群暂无用户有成绩记录！")
+        return
+    
+    # 按 rating 降序排序
+    rating_data.sort(key=lambda x: x["rating"], reverse=True)
+    
+    # 取前十名
+    top_10 = rating_data[:10]
+    
+    # 构建返回消息
+    result = f"🏆 本群 Rating 排行榜 TOP {len(top_10)}\n"
+    result += "=" * 30 + "\n"
+    
+    for i, data in enumerate(top_10, 1):
+        # 排名图标
+        if i == 1:
+            rank_icon = "🥇"
+        elif i == 2:
+            rank_icon = "🥈"
+        elif i == 3:
+            rank_icon = "🥉"
+        else:
+            rank_icon = f"{i}."
+        
+        nickname = data["nickname"]
+        rating = data["rating"]
+        
+        # 昵称长度限制：超过12字添加省略号
+        if len(nickname) > 12:
+            nickname = nickname[:12] + "..."
+        
+        result += f"{rank_icon} {nickname}\n"
+        result += f"   Rating: {rating}\n"
+    
+    result += "=" * 30
+    
+    await query_rating_ranking.finish(result)
 
 
 # ==================== 定时任务 ====================

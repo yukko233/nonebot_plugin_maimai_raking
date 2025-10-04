@@ -1,6 +1,7 @@
 """API 模块 - 对接水鱼 API 和别名 API"""
 import httpx
 import json
+import sqlite3
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 from nonebot.log import logger
@@ -23,17 +24,54 @@ class MaimaiAPI:
         self.music_data: List[dict] = []
         self.alias_data: List[dict] = []
         
-        # 本地缓存文件路径
+        # 本地缓存数据库路径
         self.cache_dir = Path("data/maimai_cache")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.alias_cache_file = self.cache_dir / "alias_data.json"
+        self.cache_db_file = self.cache_dir / "cache.db"
         
-        # 封面缓存目录
-        self.cover_cache_dir = self.cache_dir / "covers"
-        self.cover_cache_dir.mkdir(parents=True, exist_ok=True)
+        # 初始化缓存数据库
+        self._init_cache_database()
         
         # HTTP 客户端
         self.client = httpx.AsyncClient(timeout=30.0)
+    
+    def _get_cache_connection(self) -> sqlite3.Connection:
+        """获取缓存数据库连接"""
+        conn = sqlite3.connect(self.cache_db_file)
+        conn.row_factory = sqlite3.Row
+        return conn
+    
+    def _init_cache_database(self):
+        """初始化缓存数据库表结构"""
+        conn = self._get_cache_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # 创建别名数据缓存表
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS alias_cache (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    data TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+            """)
+            
+            # 创建封面缓存表
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS cover_cache (
+                    song_id INTEGER PRIMARY KEY,
+                    cover_data BLOB NOT NULL,
+                    cached_at TEXT NOT NULL
+                )
+            """)
+            
+            conn.commit()
+            logger.info("API 缓存数据库初始化完成")
+        except Exception as e:
+            logger.error(f"初始化缓存数据库失败: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
     
     def is_utage_chart(self, song_id: int) -> bool:
         """检查是否为宴谱（ID为六位数的谱面）"""
@@ -54,16 +92,24 @@ class MaimaiAPI:
             logger.error(f"加载歌曲数据时出错: {e}")
     
     async def load_alias_data(self):
-        """加载别名数据（优先从本地缓存加载）"""
-        # 1. 尝试从本地缓存加载
-        if self.alias_cache_file.exists():
-            try:
-                with open(self.alias_cache_file, "r", encoding="utf-8") as f:
-                    self.alias_data = json.load(f)
-                logger.info(f"从本地缓存加载 {len(self.alias_data)} 条别名数据")
+        """加载别名数据（优先从数据库缓存加载）"""
+        # 1. 尝试从数据库缓存加载
+        conn = self._get_cache_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("SELECT data FROM alias_cache ORDER BY id DESC LIMIT 1")
+            row = cursor.fetchone()
+            
+            if row:
+                self.alias_data = json.loads(row["data"])
+                logger.info(f"从数据库缓存加载 {len(self.alias_data)} 条别名数据")
+                conn.close()
                 return
-            except Exception as e:
-                logger.warning(f"加载本地别名缓存失败: {e}，将从API获取")
+        except Exception as e:
+            logger.warning(f"加载数据库别名缓存失败: {e}，将从API获取")
+        finally:
+            conn.close()
         
         # 2. 从API加载
         try:
@@ -86,14 +132,26 @@ class MaimaiAPI:
                     logger.warning(f"别名数据格式不正确: {type(data)}")
                     self.alias_data = []
                 
-                # 保存到本地缓存
+                # 保存到数据库缓存
                 if self.alias_data:
                     try:
-                        with open(self.alias_cache_file, "w", encoding="utf-8") as f:
-                            json.dump(self.alias_data, f, ensure_ascii=False, indent=2)
-                        logger.info(f"成功加载并缓存 {len(self.alias_data)} 条别名数据")
+                        conn = self._get_cache_connection()
+                        cursor = conn.cursor()
+                        
+                        from datetime import datetime
+                        data_json = json.dumps(self.alias_data, ensure_ascii=False)
+                        updated_at = datetime.now().isoformat()
+                        
+                        cursor.execute(
+                            "INSERT INTO alias_cache (data, updated_at) VALUES (?, ?)",
+                            (data_json, updated_at)
+                        )
+                        
+                        conn.commit()
+                        conn.close()
+                        logger.info(f"成功加载并缓存 {len(self.alias_data)} 条别名数据到数据库")
                     except Exception as e:
-                        logger.error(f"保存别名缓存失败: {e}")
+                        logger.error(f"保存别名缓存到数据库失败: {e}")
                         logger.info(f"成功加载 {len(self.alias_data)} 条别名数据（未缓存）")
             else:
                 logger.error(f"加载别名数据失败: {response.status_code}")
@@ -125,14 +183,26 @@ class MaimaiAPI:
                     logger.warning(f"别名数据格式不正确: {type(data)}")
                     self.alias_data = []
                 
-                # 保存到本地缓存
+                # 保存到数据库缓存
                 if self.alias_data:
                     try:
-                        with open(self.alias_cache_file, "w", encoding="utf-8") as f:
-                            json.dump(self.alias_data, f, ensure_ascii=False, indent=2)
-                        logger.info(f"强制更新并缓存 {len(self.alias_data)} 条别名数据")
+                        conn = self._get_cache_connection()
+                        cursor = conn.cursor()
+                        
+                        from datetime import datetime
+                        data_json = json.dumps(self.alias_data, ensure_ascii=False)
+                        updated_at = datetime.now().isoformat()
+                        
+                        cursor.execute(
+                            "INSERT INTO alias_cache (data, updated_at) VALUES (?, ?)",
+                            (data_json, updated_at)
+                        )
+                        
+                        conn.commit()
+                        conn.close()
+                        logger.info(f"强制更新并缓存 {len(self.alias_data)} 条别名数据到数据库")
                     except Exception as e:
-                        logger.error(f"保存别名缓存失败: {e}")
+                        logger.error(f"保存别名缓存到数据库失败: {e}")
                         logger.info(f"强制更新 {len(self.alias_data)} 条别名数据（未缓存）")
             else:
                 logger.error(f"强制更新别名数据失败: {response.status_code}")
@@ -339,7 +409,7 @@ class MaimaiAPI:
         return None
     
     async def get_song_cover(self, song_id: int) -> Optional[bytes]:
-        """获取歌曲封面（带缓存）
+        """获取歌曲封面（带数据库缓存）
         
         Args:
             song_id: 歌曲 ID
@@ -356,14 +426,24 @@ class MaimaiAPI:
             # 补齐为 5 位数
             cover_id_str = f"{cover_id:05d}"
             
-            # 检查本地缓存
-            cache_file = self.cover_cache_dir / f"{cover_id_str}.png"
-            if cache_file.exists():
-                try:
-                    with open(cache_file, "rb") as f:
-                        return f.read()
-                except Exception as e:
-                    logger.warning(f"读取封面缓存失败: {e}")
+            # 检查数据库缓存
+            conn = self._get_cache_connection()
+            cursor = conn.cursor()
+            
+            try:
+                cursor.execute(
+                    "SELECT cover_data FROM cover_cache WHERE song_id = ?",
+                    (cover_id,)
+                )
+                row = cursor.fetchone()
+                
+                if row:
+                    conn.close()
+                    return row["cover_data"]
+            except Exception as e:
+                logger.warning(f"读取封面缓存失败: {e}")
+            finally:
+                conn.close()
             
             # 从网络获取
             url = f"https://www.diving-fish.com/covers/{cover_id_str}.png"
@@ -372,13 +452,24 @@ class MaimaiAPI:
             if response.status_code == 200:
                 cover_data = response.content
                 
-                # 保存到缓存
+                # 保存到数据库缓存
                 try:
-                    with open(cache_file, "wb") as f:
-                        f.write(cover_data)
-                    logger.debug(f"封面已缓存: {cache_file}")
+                    conn = self._get_cache_connection()
+                    cursor = conn.cursor()
+                    
+                    from datetime import datetime
+                    cached_at = datetime.now().isoformat()
+                    
+                    cursor.execute(
+                        "INSERT OR REPLACE INTO cover_cache (song_id, cover_data, cached_at) VALUES (?, ?, ?)",
+                        (cover_id, cover_data, cached_at)
+                    )
+                    
+                    conn.commit()
+                    conn.close()
+                    logger.debug(f"封面已缓存到数据库: song_id={cover_id}")
                 except Exception as e:
-                    logger.warning(f"保存封面缓存失败: {e}")
+                    logger.warning(f"保存封面缓存到数据库失败: {e}")
                 
                 return cover_data
             else:
