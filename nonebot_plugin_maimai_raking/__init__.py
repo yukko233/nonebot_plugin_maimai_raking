@@ -580,12 +580,19 @@ async def _():
     await api.load_music_data()
     await api.load_alias_data()
     logger.info("歌曲数据和别名数据加载完成")
+
+
+@driver.on_bot_connect
+async def _(bot: Bot):
+    """Bot连接成功后的初始化"""
+    logger.info("Bot已连接，开始初始化用户昵称缓存")
     
-    # 初始化所有启用群的用户昵称缓存
     try:
-        from nonebot import get_bot
-        bot = get_bot()
         enabled_groups = db.get_all_enabled_groups()
+        if not enabled_groups:
+            logger.info("没有启用的群，跳过昵称缓存初始化")
+            return
+        
         logger.info(f"开始初始化 {len(enabled_groups)} 个群的用户昵称缓存")
         
         for group_id in enabled_groups:
