@@ -1,10 +1,12 @@
 """图片渲染模块 - 生成排行榜图片"""
 from io import BytesIO
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from PIL import Image, ImageDraw, ImageFont
 import os
 from pathlib import Path
 from nonebot.log import logger
+from functools import lru_cache
+import asyncio
 
 # 图标文件夹路径
 ICON_DIR = Path(__file__).parent / "icon"
@@ -12,6 +14,111 @@ ICON_DIR = Path(__file__).parent / "icon"
 FONT_DIR = Path(__file__).parent / "fonts"
 # 确保字体文件夹存在
 FONT_DIR.mkdir(exist_ok=True)
+
+# 缓存配置
+CACHE_SIZE = 100  # 缓存大小
+COVER_CACHE_SIZE = 50  # 封面缓存大小
+
+# 全局缓存字典
+_icon_cache = {}
+_font_cache = {}
+_cover_cache = {}
+_rounded_mask_cache = {}
+
+
+@lru_cache(maxsize=CACHE_SIZE)
+def _get_font_path() -> Optional[str]:
+    """获取字体文件路径（带缓存）"""
+    try:
+        custom_fonts = list(FONT_DIR.glob("*.ttf")) + list(FONT_DIR.glob("*.ttc"))
+        if custom_fonts:
+            return str(custom_fonts[0])
+        
+        # 系统字体回退
+        if os.name == 'nt':  # Windows
+            return "msyh.ttc"
+        else:  # Linux
+            return "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"
+    except:
+        return None
+
+
+def _get_font(size: int) -> ImageFont.FreeTypeFont:
+    """获取字体对象（带缓存）"""
+    cache_key = f"{size}"
+    if cache_key in _font_cache:
+        return _font_cache[cache_key]
+    
+    font_path = _get_font_path()
+    try:
+        if font_path:
+            font = ImageFont.truetype(font_path, size)
+        else:
+            font = ImageFont.load_default()
+        
+        _font_cache[cache_key] = font
+        return font
+    except:
+        font = ImageFont.load_default()
+        _font_cache[cache_key] = font
+        return font
+
+
+def _get_icon(icon_name: str, size: tuple) -> Optional[Image.Image]:
+    """获取图标（带缓存）"""
+    cache_key = f"{icon_name}_{size[0]}x{size[1]}"
+    if cache_key in _icon_cache:
+        return _icon_cache[cache_key]
+    
+    icon_path = ICON_DIR / f"mmd_player_rtsong_{icon_name}.png"
+    if not icon_path.exists():
+        return None
+    
+    try:
+        icon = Image.open(icon_path).convert("RGBA")
+        icon = icon.resize(size, Image.Resampling.LANCZOS)
+        _icon_cache[cache_key] = icon
+        return icon
+    except Exception:
+        return None
+
+
+def _get_rounded_mask(size: int) -> Image.Image:
+    """获取圆角遮罩（带缓存）"""
+    if size in _rounded_mask_cache:
+        return _rounded_mask_cache[size]
+    
+    mask = Image.new("L", (size, size), 0)
+    mask_draw = ImageDraw.Draw(mask)
+    mask_draw.rounded_rectangle([(0, 0), (size, size)], radius=12, fill=255)
+    
+    _rounded_mask_cache[size] = mask
+    return mask
+
+
+async def _get_cached_cover(api, song_id: int) -> Optional[bytes]:
+    """获取缓存的封面数据"""
+    if song_id in _cover_cache:
+        return _cover_cache[song_id]
+    
+    if not api:
+        return None
+    
+    try:
+        cover_data = await api.get_song_cover(song_id)
+        if cover_data:
+            # 限制缓存大小
+            if len(_cover_cache) >= COVER_CACHE_SIZE:
+                # 移除最旧的缓存项
+                oldest_key = next(iter(_cover_cache))
+                del _cover_cache[oldest_key]
+            
+            _cover_cache[song_id] = cover_data
+            return cover_data
+    except Exception as e:
+        logger.warning(f"获取封面失败: {e}")
+    
+    return None
 
 
 # 难度颜色
@@ -65,38 +172,11 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     img = Image.new("RGB", (width, height), color=(250, 250, 252))
     draw = ImageDraw.Draw(img)
     
-    # 尝试加载字体
-    try:
-        # 优先尝试加载自定义字体（支持表情符号和特殊符号的字体）
-        # 推荐使用支持完整Unicode的字体，如 Noto Sans CJK SC、Microsoft YaHei UI、Segoe UI Emoji 等
-        # 用户可以将字体文件放在 nonebot_plugin_maimai_raking/fonts 文件夹下
-        custom_fonts = list(FONT_DIR.glob("*.ttf")) + list(FONT_DIR.glob("*.ttc"))
-        if custom_fonts:
-            # 使用找到的第一个自定义字体
-            font_path = str(custom_fonts[0])
-            font_title = ImageFont.truetype(font_path, 32)
-            font_normal = ImageFont.truetype(font_path, 24)
-            font_small = ImageFont.truetype(font_path, 18)
-            font_tiny = ImageFont.truetype(font_path, 17)  # 用于长名字的小字体
-        else:
-            # Windows 字体
-            font_title = ImageFont.truetype("msyh.ttc", 32)
-            font_normal = ImageFont.truetype("msyh.ttc", 24)
-            font_small = ImageFont.truetype("msyh.ttc", 18)
-            font_tiny = ImageFont.truetype("msyh.ttc", 17)  # 用于长名字的小字体
-    except:
-        try:
-            # Linux 字体
-            font_title = ImageFont.truetype("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 32)
-            font_normal = ImageFont.truetype("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 24)
-            font_small = ImageFont.truetype("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 18)
-            font_tiny = ImageFont.truetype("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc", 17)  # 用于长名字的小字体
-        except:
-            # 使用默认字体
-            font_title = ImageFont.load_default()
-            font_normal = ImageFont.load_default()
-            font_small = ImageFont.load_default()
-            font_tiny = ImageFont.load_default()  # 用于长名字的小字体
+    # 使用缓存的字体
+    font_title = _get_font(32)
+    font_normal = _get_font(24)
+    font_small = _get_font(18)
+    font_tiny = _get_font(17)
     
     # 简洁的背景设计
     song_type = song.get("type", "DX")
@@ -113,17 +193,14 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     if api:
         try:
             song_id = int(song.get("id", 0))
-            cover_data = await api.get_song_cover(song_id)
+            cover_data = await _get_cached_cover(api, song_id)
             if cover_data:
-                from io import BytesIO
                 cover_img = Image.open(BytesIO(cover_data)).convert("RGBA")
                 # 调整封面大小
                 cover_img = cover_img.resize((cover_size, cover_size), Image.Resampling.LANCZOS)
                 
-                # 创建圆角遮罩
-                mask = Image.new("L", (cover_size, cover_size), 0)
-                mask_draw = ImageDraw.Draw(mask)
-                mask_draw.rounded_rectangle([(0, 0), (cover_size, cover_size)], radius=12, fill=255)
+                # 使用缓存的圆角遮罩
+                mask = _get_rounded_mask(cover_size)
                 
                 # 应用圆角遮罩
                 cover_img.putalpha(mask)
@@ -301,15 +378,17 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
         nickname_x = 200
         nickname_y = y_offset + row_height // 2
         
-        if len(nickname) > 8:
+        # 优化：预计算昵称长度
+        nickname_len = len(nickname)
+        
+        if nickname_len > 8:
             # 长名字：使用小字体并换行
-            # 确保第一行不超过8个字符
-            if len(nickname) <= 16:
+            if nickname_len <= 16:
                 # 如果总长度不超过16，尝试平均分配
-                mid_point = len(nickname) // 2
+                mid_point = nickname_len // 2
                 # 寻找最佳分割点（避免在字符中间分割）
                 split_point = mid_point
-                for i in range(max(1, mid_point - 2), min(len(nickname), mid_point + 3)):
+                for i in range(max(1, mid_point - 2), min(nickname_len, mid_point + 3)):
                     if nickname[i] in ' -_':
                         split_point = i
                         break
@@ -328,7 +407,7 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
             
             # 如果第二行为空，则不分割
             if not line2.strip():
-                line1 = nickname[:8] + "..." if len(nickname) > 8 else nickname
+                line1 = nickname[:8] + "..." if nickname_len > 8 else nickname
                 line2 = ""
             
             # 绘制第一行
@@ -369,40 +448,24 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
             icon_x = fc_fs_x - total_width // 2
             
             if fc:
-                fc_icon_path = ICON_DIR / f"mmd_player_rtsong_{fc}.png"
-                if fc_icon_path.exists():
-                    try:
-                        fc_icon = Image.open(fc_icon_path).convert("RGBA")
-                        fc_icon = fc_icon.resize(icon_size, Image.Resampling.LANCZOS)
-                        img.paste(fc_icon, (icon_x, y_offset + row_height // 2 - icon_size[1] // 2), fc_icon)
-                        icon_x += icon_size[0] + 5
-                    except Exception:
-                        pass
+                fc_icon = _get_icon(fc, icon_size)
+                if fc_icon:
+                    img.paste(fc_icon, (icon_x, y_offset + row_height // 2 - icon_size[1] // 2), fc_icon)
+                    icon_x += icon_size[0] + 5
             
             if fs:
-                fs_icon_path = ICON_DIR / f"mmd_player_rtsong_{fs}.png"
-                if fs_icon_path.exists():
-                    try:
-                        fs_icon = Image.open(fs_icon_path).convert("RGBA")
-                        fs_icon = fs_icon.resize(icon_size, Image.Resampling.LANCZOS)
-                        img.paste(fs_icon, (icon_x, y_offset + row_height // 2 - icon_size[1] // 2), fs_icon)
-                    except Exception:
-                        pass
+                fs_icon = _get_icon(fs, icon_size)
+                if fs_icon:
+                    img.paste(fs_icon, (icon_x, y_offset + row_height // 2 - icon_size[1] // 2), fs_icon)
         
         # 评级图标
         rate = data.get("rate", "").lower()
         if rate:
-            rate_icon_path = ICON_DIR / f"mmd_player_rtsong_{rate}.png"
-            if rate_icon_path.exists():
-                try:
-                    rate_icon = Image.open(rate_icon_path).convert("RGBA")
-                    # 调整图标大小（保持 200×89 的比例，稍微放大）
-                    rate_icon_size = (80, 36)  # 保持原始比例
-                    rate_icon = rate_icon.resize(rate_icon_size, Image.Resampling.LANCZOS)
-                    # 粘贴图标（居中）
-                    img.paste(rate_icon, (750 - rate_icon_size[0] // 2, y_offset + row_height // 2 - rate_icon_size[1] // 2), rate_icon)
-                except Exception:
-                    pass
+            rate_icon_size = (80, 36)  # 保持原始比例
+            rate_icon = _get_icon(rate, rate_icon_size)
+            if rate_icon:
+                # 粘贴图标（居中）
+                img.paste(rate_icon, (750 - rate_icon_size[0] // 2, y_offset + row_height // 2 - rate_icon_size[1] // 2), rate_icon)
         
         y_offset += row_height
     
@@ -418,8 +481,31 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
         anchor="mm"
     )
     
-    # 转换为字节
+    # 转换为字节（优化保存性能）
     bio = BytesIO()
-    img.save(bio, format="PNG")
+    # 使用optimize=True和适当的压缩级别
+    img.save(bio, format="PNG", optimize=True, compress_level=6)
     return bio.getvalue()
+
+
+def clear_cache():
+    """清理所有缓存"""
+    global _icon_cache, _font_cache, _cover_cache, _rounded_mask_cache
+    _icon_cache.clear()
+    _font_cache.clear()
+    _cover_cache.clear()
+    _rounded_mask_cache.clear()
+    _get_font_path.cache_clear()
+    logger.info("已清理所有渲染缓存")
+
+
+def get_cache_stats() -> dict:
+    """获取缓存统计信息"""
+    return {
+        "icon_cache_size": len(_icon_cache),
+        "font_cache_size": len(_font_cache),
+        "cover_cache_size": len(_cover_cache),
+        "mask_cache_size": len(_rounded_mask_cache),
+        "font_path_cache_info": _get_font_path.cache_info()
+    }
 
