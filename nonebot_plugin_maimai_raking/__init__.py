@@ -37,7 +37,8 @@ __plugin_meta__ = PluginMetadata(
     - 退出排行榜
     - wmrk <歌曲名/别名/ID> [难度]
     - wmbm <歌曲名/别名/ID>
-    - wmrt - 查看本群 Rating 排行榜
+    - wmrt [分段] - 查看本群 Rating 排行榜
+      例如：wmrt 查询全部，wmrt5 查询15000分段
     """,
     type="application",
     homepage="https://github.com/yourusername/nonebot-plugin-maimai-raking",
@@ -545,13 +546,47 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
 
 
 @query_rating_ranking.handle()
-async def _(bot: Bot, event: GroupMessageEvent):
+async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     """查询群内 Rating 排行榜"""
     group_id = str(event.group_id)
     
     if not db.is_group_enabled(group_id):
         await query_rating_ranking.finish("本群未开启舞萌排行榜功能！")
         return
+    
+    # 解析分段参数
+    arg_text = args.extract_plain_text().strip()
+    rating_segment = None
+    min_rating = 0
+    max_rating = 999999
+    segment_display = "全部"
+    
+    if arg_text:
+        # 尝试解析分段参数（例如：wmrt5 表示 15000+ 分段）
+        try:
+            segment = int(arg_text)
+            if 1 <= segment <= 9:
+                rating_segment = segment
+                min_rating = segment * 1000 + 10000  # 1->11000, 2->12000, ..., 5->15000
+                max_rating = min_rating + 999  # 例如 15000-15999
+                segment_display = f"{min_rating}~{max_rating}"
+            else:
+                await query_rating_ranking.finish(
+                    "❌ 分段参数错误！\n"
+                    "请使用 1-9 的数字，例如：\n"
+                    "• wmrt5 - 查询 15000-15999 分段\n"
+                    "• wmrt4 - 查询 14000-14999 分段\n"
+                    "• wmrt - 查询全部玩家"
+                )
+                return
+        except ValueError:
+            await query_rating_ranking.finish(
+                "❌ 参数格式错误！\n"
+                "请使用数字参数，例如：\n"
+                "• wmrt5 - 查询 15000-15999 分段\n"
+                "• wmrt - 查询全部玩家"
+            )
+            return
     
     # 获取群内用户
     users = db.get_group_users(group_id)
@@ -569,6 +604,11 @@ async def _(bot: Bot, event: GroupMessageEvent):
         rating = records.get("rating", 0)
         nickname = records.get("nickname", "未知")
         
+        # 如果指定了分段，只统计该分段的玩家
+        if rating_segment is not None:
+            if not (min_rating <= rating <= max_rating):
+                continue
+        
         # 获取群内昵称
         group_nickname = await get_group_nickname(bot, qq, group_id)
         
@@ -580,7 +620,10 @@ async def _(bot: Bot, event: GroupMessageEvent):
         })
     
     if not rating_data:
-        await query_rating_ranking.finish("本群暂无用户有成绩记录！")
+        if rating_segment is not None:
+            await query_rating_ranking.finish(f"本群 {segment_display} 分段暂无玩家！")
+        else:
+            await query_rating_ranking.finish("本群暂无用户有成绩记录！")
         return
     
     # 按 rating 降序排序
@@ -590,7 +633,11 @@ async def _(bot: Bot, event: GroupMessageEvent):
     top_10 = rating_data[:10]
     
     # 构建返回消息
-    result = f"🏆 本群 Rating 排行榜 TOP {len(top_10)}\n"
+    if rating_segment is not None:
+        result = f"🏆 本群 Rating 排行榜 W{rating_segment} TOP {len(top_10)}\n"
+    else:
+        result = f"🏆 本群 Rating 排行榜 TOP {len(top_10)}\n"
+    
     result += "=" * 30 + "\n"
     
     for i, data in enumerate(top_10, 1):
@@ -615,6 +662,10 @@ async def _(bot: Bot, event: GroupMessageEvent):
         result += f"   Rating: {rating}\n"
     
     result += "=" * 30
+    
+    # 如果该分段有更多玩家，显示总人数
+    if len(rating_data) > 10:
+        result += f"\n该分段共 {len(rating_data)} 人"
     
     await query_rating_ranking.finish(result)
 
