@@ -72,39 +72,43 @@ async def get_group_nickname(bot: Bot, qq: str, group_id: str) -> str:
 
 async def update_group_nicknames(bot: Bot, group_id: str):
     """更新指定群的所有排行榜用户昵称"""
-    users = db.get_group_users(group_id)
-    if not users:
-        return
-    
-    logger.info(f"开始更新群 {group_id} 的 {len(users)} 个用户昵称")
-    success_count = 0
-    
-    for qq in users:
-        try:
-            # 获取群成员信息
-            member_info = await bot.get_group_member_info(group_id=int(group_id), user_id=int(qq))
-            # 群名片（card）优先，如果没有则使用QQ昵称（nickname）
-            nickname = member_info.get("card") or member_info.get("nickname", qq)
-            if not nickname.strip():  # 如果群名片为空字符串，使用QQ昵称
-                nickname = member_info.get("nickname", qq)
-            
-            # 更新缓存
-            cache_key = f"{group_id}_{qq}"
-            group_nickname_cache[cache_key] = nickname
-            success_count += 1
-        except Exception as e:
-            logger.warning(f"更新群 {group_id} 中用户 {qq} 的昵称失败: {e}")
-            # 如果获取群成员信息失败，尝试获取QQ昵称作为备用
+    try:
+        users = db.get_group_users(group_id)
+        if not users:
+            return
+        
+        logger.info(f"开始更新群 {group_id} 的 {len(users)} 个用户昵称")
+        success_count = 0
+        
+        for qq in users:
             try:
-                info = await bot.get_stranger_info(user_id=int(qq))
-                nickname = info.get("nickname", qq)
+                # 获取群成员信息
+                member_info = await bot.get_group_member_info(group_id=int(group_id), user_id=int(qq))
+                # 群名片（card）优先，如果没有则使用QQ昵称（nickname）
+                nickname = member_info.get("card") or member_info.get("nickname", qq)
+                if not nickname.strip():  # 如果群名片为空字符串，使用QQ昵称
+                    nickname = member_info.get("nickname", qq)
+                
+                # 更新缓存
                 cache_key = f"{group_id}_{qq}"
                 group_nickname_cache[cache_key] = nickname
                 success_count += 1
-            except Exception as e2:
-                logger.warning(f"获取QQ {qq} 昵称也失败: {e2}")
-    
-    logger.info(f"群 {group_id} 昵称更新完成，成功: {success_count}/{len(users)}")
+            except Exception as e:
+                logger.warning(f"更新群 {group_id} 中用户 {qq} 的昵称失败: {e}")
+                # 如果获取群成员信息失败，尝试获取QQ昵称作为备用
+                try:
+                    info = await bot.get_stranger_info(user_id=int(qq))
+                    nickname = info.get("nickname", qq)
+                    cache_key = f"{group_id}_{qq}"
+                    group_nickname_cache[cache_key] = nickname
+                    success_count += 1
+                except Exception as e2:
+                    logger.warning(f"获取QQ {qq} 昵称也失败: {e2}")
+        
+        logger.info(f"群 {group_id} 昵称更新完成，成功: {success_count}/{len(users)}")
+    except Exception as e:
+        logger.error(f"更新群 {group_id} 昵称时发生未预期的错误: {e}")
+        raise
 
 # ==================== 管理员命令 ====================
 
@@ -244,14 +248,12 @@ async def _(bot: Bot, event: GroupMessageEvent):
     
     try:
         await update_group_nicknames(bot, group_id)
-        await refresh_nickname.finish("✅ 群昵称刷新完成！")
+        # 使用 send 而不是 finish，避免 FinishedException
+        await refresh_nickname.send("✅ 群昵称刷新完成！")
     except Exception as e:
         logger.error(f"刷新群昵称失败: {e}")
-        # 只有在没有发送过消息的情况下才发送失败消息
-        try:
-            await refresh_nickname.finish("❌ 刷新群昵称失败，请稍后重试！")
-        except:
-            pass  # 如果已经发送过消息，忽略这个错误
+        # 使用 send 而不是 finish，避免 FinishedException
+        await refresh_nickname.send("❌ 刷新群昵称失败，请稍后重试！")
 
 
 @reset_refresh_count.handle()
