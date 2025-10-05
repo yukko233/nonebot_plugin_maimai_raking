@@ -26,15 +26,18 @@ __plugin_meta__ = PluginMetadata(
     name="舞萌排行榜",
     description="一个基于 NoneBot2 的舞萌 DX 分群排行榜插件",
     usage="""
+    超管命令：
+    - 刷新排行榜
+    
     管理员命令：
     - 开启舞萌排行榜
     - 关闭舞萌排行榜
-    - 刷新排行榜
     - 刷新群昵称
     
     用户命令：
     - 加入排行榜 [QQ号]
     - 退出排行榜
+    - 刷新成绩
     - wmrk <歌曲名/别名/ID> [难度]
     - wmbm <歌曲名/别名/ID>
     - wmrt [分段] - 查看本群 Rating 排行榜
@@ -132,7 +135,7 @@ async def _(event: GroupMessageEvent):
 
 refresh_ranking = on_command(
     "刷新排行榜",
-    permission=SUPERUSER | GROUP_ADMIN | GROUP_OWNER,
+    permission=SUPERUSER,
     priority=5,
     block=True,
 )
@@ -202,6 +205,56 @@ async def _(bot: Bot, event: GroupMessageEvent):
     except Exception as e:
         logger.error(f"刷新群昵称失败: {e}")
         await refresh_nicknames.finish("❌ 刷新群昵称失败，请稍后重试！")
+
+
+refresh_records = on_command("刷新成绩", priority=10, block=True)
+
+@refresh_records.handle()
+async def _(bot: Bot, event: GroupMessageEvent):
+    """刷新自己的成绩"""
+    group_id = str(event.group_id)
+    user_id = str(event.user_id)
+    
+    if not db.is_group_enabled(group_id):
+        await refresh_records.finish("本群未开启舞萌排行榜功能！")
+        return
+    
+    # 检查用户是否在排行榜中
+    if not db.is_user_in_group(user_id, group_id):
+        await refresh_records.finish("你还未加入本群排行榜！")
+        return
+    
+    await refresh_records.send("正在刷新你的成绩数据，请稍候...")
+    
+    try:
+        # 获取最新成绩
+        records = await api.get_player_records(user_id)
+        if not records:
+            await refresh_records.finish(
+                "❌ 无法获取你的成绩数据！\n"
+                "请确保：\n"
+                "1. 已在水鱼查分器绑定此 QQ 号\n"
+                "2. 已关闭隐私设置（允许第三方查询）\n"
+                "3. 网络连接正常"
+            )
+            return
+        
+        # 更新成绩
+        db.update_user_records(user_id, records)
+        
+        # 获取更新后的信息
+        nickname = records.get("nickname", "未知")
+        rating = records.get("rating", 0)
+        
+        await refresh_records.finish(
+            f"✅ 成绩刷新完成！\n"
+            f"昵称: {nickname}\n"
+            f"Rating: {rating}"
+        )
+        
+    except Exception as e:
+        logger.error(f"刷新用户 {user_id} 的成绩时出错: {e}")
+        await refresh_records.finish("❌ 刷新成绩失败，请稍后重试！")
 
 
 # ==================== 用户命令 ====================
@@ -565,17 +618,23 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
         # 尝试解析分段参数（例如：wmrt5 表示 15000+ 分段）
         try:
             segment = int(arg_text)
-            if 1 <= segment <= 9:
+            if 0 <= segment <= 7:
                 rating_segment = segment
-                min_rating = segment * 1000 + 10000  # 1->11000, 2->12000, ..., 5->15000
-                max_rating = min_rating + 999  # 例如 15000-15999
-                segment_display = f"{min_rating}~{max_rating}"
+                if segment == 0:
+                    min_rating = 10000
+                    max_rating = 10999
+                    segment_display = "10000~10999"
+                else:
+                    min_rating = segment * 1000 + 10000  # 1->11000, 2->12000, ..., 7->17000
+                    max_rating = min_rating + 999  # 例如 15000-15999
+                    segment_display = f"{min_rating}~{max_rating}"
             else:
                 await query_rating_ranking.finish(
                     "❌ 分段参数错误！\n"
-                    "请使用 1-9 的数字，例如：\n"
+                    "请使用 0-7 的数字，例如：\n"
+                    "• wmrt0 - 查询 10000-10999 分段\n"
                     "• wmrt5 - 查询 15000-15999 分段\n"
-                    "• wmrt4 - 查询 14000-14999 分段\n"
+                    "• wmrt7 - 查询 17000-17999 分段\n"
                     "• wmrt - 查询全部玩家"
                 )
                 return
@@ -583,6 +642,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
             await query_rating_ranking.finish(
                 "❌ 参数格式错误！\n"
                 "请使用数字参数，例如：\n"
+                "• wmrt0 - 查询 10000-10999 分段\n"
                 "• wmrt5 - 查询 15000-15999 分段\n"
                 "• wmrt - 查询全部玩家"
             )
