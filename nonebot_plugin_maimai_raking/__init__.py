@@ -13,6 +13,7 @@ from nonebot.message import event_preprocessor
 from nonebot.log import logger
 from nonebot.adapters.onebot.v11 import Message
 from nonebot.typing import T_State
+from datetime import datetime
 
 require("nonebot_plugin_apscheduler")
 from nonebot_plugin_apscheduler import scheduler
@@ -28,15 +29,18 @@ __plugin_meta__ = PluginMetadata(
     usage="""
     超管命令：
     - 刷新排行榜
+    - 重置刷新次数 <QQ号/@用户>
     
     管理员命令：
     - 开启舞萌排行榜
     - 关闭舞萌排行榜
     - 刷新群昵称
+    - 加入排行榜 <QQ号/@用户>
+    - 退出排行榜 <QQ号/@用户>
     
     用户命令：
-    - 加入排行榜 [QQ号]
-    - 退出排行榜
+    - 加入排行榜 [QQ号/@用户]
+    - 退出排行榜 [QQ号/@用户]
     - 刷新成绩
     - wmrk <歌曲名/别名/ID> [难度]
     - wmbm <歌曲名/别名/ID>
@@ -183,6 +187,13 @@ refresh_nicknames = on_command(
     block=True,
 )
 
+reset_refresh_count = on_command(
+    "重置刷新次数",
+    permission=SUPERUSER,
+    priority=5,
+    block=True,
+)
+
 @refresh_nicknames.handle()
 async def _(bot: Bot, event: GroupMessageEvent):
     """手动刷新群昵称"""
@@ -207,6 +218,55 @@ async def _(bot: Bot, event: GroupMessageEvent):
         await refresh_nicknames.finish("❌ 刷新群昵称失败，请稍后重试！")
 
 
+@reset_refresh_count.handle()
+async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
+    """重置用户刷新次数"""
+    group_id = str(event.group_id)
+    user_id = str(event.user_id)
+    
+    if not db.is_group_enabled(group_id):
+        await reset_refresh_count.finish("本群未开启舞萌排行榜功能！")
+        return
+    
+    # 解析参数：支持QQ号或@用户
+    arg_text = args.extract_plain_text().strip()
+    target_qq = None
+    
+    # 检查是否有@用户
+    if event.message:
+        for segment in event.message:
+            if segment.type == "at":
+                target_qq = str(segment.data.get("qq", ""))
+                break
+    
+    # 确定目标QQ号
+    if target_qq:
+        # 有@用户，使用@的用户
+        qq = target_qq
+    elif arg_text:
+        # 有文本参数，使用文本参数
+        qq = arg_text
+    else:
+        await reset_refresh_count.finish("请指定要重置的用户！\n使用方法：\n• 重置刷新次数 <QQ号>\n• 重置刷新次数 @用户")
+        return
+    
+    # 检查用户是否在排行榜中
+    if not db.is_user_in_group(qq, group_id):
+        await reset_refresh_count.finish(f"用户 {qq} 未加入本群排行榜！")
+        return
+    
+    try:
+        # 重置今日刷新次数
+        today = datetime.now().strftime("%Y-%m-%d")
+        db.reset_daily_refresh_count(qq, today)
+        
+        await reset_refresh_count.finish(f"✅ 已重置用户 {qq} 的今日刷新次数！")
+        
+    except Exception as e:
+        logger.error(f"重置用户 {qq} 的刷新次数失败: {e}")
+        await reset_refresh_count.finish("❌ 重置失败，请稍后重试！")
+
+
 refresh_records = on_command("刷新成绩", priority=10, block=True)
 
 @refresh_records.handle()
@@ -223,6 +283,23 @@ async def _(bot: Bot, event: GroupMessageEvent):
     if not db.is_user_in_group(user_id, group_id):
         await refresh_records.finish("你还未加入本群排行榜！")
         return
+    
+    # 检查刷新频率限制（一个自然日内最多2次）
+    today = datetime.now().strftime("%Y-%m-%d")
+    last_update_time = db.get_last_update_time(user_id)
+    
+    if last_update_time:
+        last_update_date = last_update_time.split("T")[0]  # 提取日期部分
+        if last_update_date == today:
+            # 检查今日刷新次数
+            refresh_count = db.get_daily_refresh_count(user_id, today)
+            if refresh_count >= 2:
+                await refresh_records.finish(
+                    "❌ 今日刷新次数已达上限！\n"
+                    "每个自然日最多可刷新2次成绩\n"
+                    "请明天再试，或联系管理员"
+                )
+                return
     
     await refresh_records.send("正在刷新你的成绩数据，请稍候...")
     
@@ -242,15 +319,22 @@ async def _(bot: Bot, event: GroupMessageEvent):
         # 更新成绩
         db.update_user_records(user_id, records)
         
+        # 记录刷新操作
+        db.log_refresh(user_id, today)
+        
         # 获取更新后的信息
         nickname = records.get("nickname", "未知")
         rating = records.get("rating", 0)
+        
+        # 计算剩余刷新次数
+        remaining_count = 2 - db.get_daily_refresh_count(user_id, today)
         
         # 发送成功消息
         await refresh_records.finish(
             f"✅ 成绩刷新完成！\n"
             f"昵称: {nickname}\n"
-            f"Rating: {rating}"
+            f"Rating: {rating}\n"
+            f"今日剩余刷新次数: {remaining_count}/2"
         )
         
     except Exception as e:
@@ -276,12 +360,30 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
         await join_ranking.finish("本群未开启舞萌排行榜功能！")
         return
     
-    # 解析 QQ 号参数
+    # 解析参数：支持QQ号或@用户
     arg_text = args.extract_plain_text().strip()
-    qq = arg_text if arg_text else user_id
+    target_qq = None
+    
+    # 检查是否有@用户
+    if event.message:
+        for segment in event.message:
+            if segment.type == "at":
+                target_qq = str(segment.data.get("qq", ""))
+                break
+    
+    # 确定目标QQ号
+    if target_qq:
+        # 有@用户，使用@的用户
+        qq = target_qq
+    elif arg_text:
+        # 有文本参数，使用文本参数
+        qq = arg_text
+    else:
+        # 无参数，使用自己
+        qq = user_id
     
     # 如果指定了其他QQ号，需要管理员权限
-    if arg_text and arg_text != user_id:
+    if qq != user_id:
         # 检查权限：超管、群主、群管理员
         has_permission = False
         try:
@@ -379,12 +481,30 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
         await leave_ranking.finish("本群未开启舞萌排行榜功能！")
         return
     
-    # 解析 QQ 号参数
+    # 解析参数：支持QQ号或@用户
     arg_text = args.extract_plain_text().strip()
-    qq = arg_text if arg_text else user_id
+    target_qq = None
+    
+    # 检查是否有@用户
+    if event.message:
+        for segment in event.message:
+            if segment.type == "at":
+                target_qq = str(segment.data.get("qq", ""))
+                break
+    
+    # 确定目标QQ号
+    if target_qq:
+        # 有@用户，使用@的用户
+        qq = target_qq
+    elif arg_text:
+        # 有文本参数，使用文本参数
+        qq = arg_text
+    else:
+        # 无参数，使用自己
+        qq = user_id
     
     # 如果指定了其他QQ号，需要管理员权限
-    if arg_text and arg_text != user_id:
+    if qq != user_id:
         # 检查权限：超管、群主、群管理员
         has_permission = False
         try:

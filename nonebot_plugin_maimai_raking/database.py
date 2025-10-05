@@ -75,6 +75,17 @@ class Database:
                 )
             """)
             
+            # 创建刷新记录表（用于频率限制）
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS refresh_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    qq TEXT NOT NULL,
+                    refresh_date TEXT NOT NULL,
+                    refresh_time TEXT NOT NULL,
+                    FOREIGN KEY (qq) REFERENCES users(qq)
+                )
+            """)
+            
             # 创建索引
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_user_groups_group_id 
@@ -340,6 +351,61 @@ class Database:
         except Exception as e:
             logger.error(f"获取用户 {qq} 的更新时间失败: {e}")
             return None
+        finally:
+            conn.close()
+    
+    def get_daily_refresh_count(self, qq: str, date: str) -> int:
+        """获取用户指定日期的刷新次数"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute(
+                "SELECT COUNT(*) as count FROM refresh_logs WHERE qq = ? AND refresh_date = ?",
+                (qq, date)
+            )
+            row = cursor.fetchone()
+            return row["count"] if row else 0
+        except Exception as e:
+            logger.error(f"获取用户 {qq} 的刷新次数失败: {e}")
+            return 0
+        finally:
+            conn.close()
+    
+    def log_refresh(self, qq: str, date: str):
+        """记录用户刷新操作"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            refresh_time = datetime.now().isoformat()
+            cursor.execute(
+                "INSERT INTO refresh_logs (qq, refresh_date, refresh_time) VALUES (?, ?, ?)",
+                (qq, date, refresh_time)
+            )
+            conn.commit()
+            logger.info(f"记录用户 {qq} 的刷新操作: {date}")
+        except Exception as e:
+            logger.error(f"记录用户 {qq} 的刷新操作失败: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
+    
+    def reset_daily_refresh_count(self, qq: str, date: str):
+        """重置用户指定日期的刷新次数"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute(
+                "DELETE FROM refresh_logs WHERE qq = ? AND refresh_date = ?",
+                (qq, date)
+            )
+            conn.commit()
+            logger.info(f"重置用户 {qq} 的刷新次数: {date}")
+        except Exception as e:
+            logger.error(f"重置用户 {qq} 的刷新次数失败: {e}")
+            conn.rollback()
         finally:
             conn.close()
 
