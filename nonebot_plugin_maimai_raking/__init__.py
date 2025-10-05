@@ -246,6 +246,7 @@ async def _(bot: Bot, event: GroupMessageEvent):
         nickname = records.get("nickname", "未知")
         rating = records.get("rating", 0)
         
+        # 发送成功消息
         await refresh_records.finish(
             f"✅ 成绩刷新完成！\n"
             f"昵称: {nickname}\n"
@@ -254,7 +255,11 @@ async def _(bot: Bot, event: GroupMessageEvent):
         
     except Exception as e:
         logger.error(f"刷新用户 {user_id} 的成绩时出错: {e}")
-        await refresh_records.finish("❌ 刷新成绩失败，请稍后重试！")
+        # 只有在没有发送过消息的情况下才发送失败消息
+        try:
+            await refresh_records.finish("❌ 刷新成绩失败，请稍后重试！")
+        except:
+            pass  # 如果已经发送过消息，忽略这个错误
 
 
 # ==================== 用户命令 ====================
