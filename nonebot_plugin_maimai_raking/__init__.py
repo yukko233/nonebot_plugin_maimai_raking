@@ -224,10 +224,12 @@ async def _(bot: Bot, event: GroupMessageEvent):
     
     try:
         await update_group_nicknames(bot, group_id)
-        await refresh_nicknames.finish("✅ 群昵称刷新完成！")
+        # 使用 send 而不是 finish，避免 FinishedException
+        await refresh_nicknames.send("✅ 群昵称刷新完成！")
     except Exception as e:
         logger.error(f"刷新群昵称失败: {e}")
-        await refresh_nicknames.finish("❌ 刷新群昵称失败，请稍后重试！")
+        # 使用 send 而不是 finish，避免 FinishedException
+        await refresh_nicknames.send("❌ 刷新群昵称失败，请稍后重试！")
 
 
 @refresh_nickname.handle()
