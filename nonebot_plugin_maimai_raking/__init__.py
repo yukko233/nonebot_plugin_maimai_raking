@@ -35,6 +35,7 @@ __plugin_meta__ = PluginMetadata(
     - 开启舞萌排行榜
     - 关闭舞萌排行榜
     - 刷新群昵称
+    - 刷新昵称
     - 加入排行榜 <QQ号/@用户>
     - 退出排行榜 <QQ号/@用户>
     
@@ -187,6 +188,13 @@ refresh_nicknames = on_command(
     block=True,
 )
 
+refresh_nickname = on_command(
+    "刷新昵称",
+    permission=SUPERUSER | GROUP_ADMIN | GROUP_OWNER,
+    priority=5,
+    block=True,
+)
+
 reset_refresh_count = on_command(
     "重置刷新次数",
     permission=SUPERUSER,
@@ -216,6 +224,30 @@ async def _(bot: Bot, event: GroupMessageEvent):
     except Exception as e:
         logger.error(f"刷新群昵称失败: {e}")
         await refresh_nicknames.finish("❌ 刷新群昵称失败，请稍后重试！")
+
+
+@refresh_nickname.handle()
+async def _(bot: Bot, event: GroupMessageEvent):
+    """手动刷新群昵称"""
+    group_id = str(event.group_id)
+    
+    if not db.is_group_enabled(group_id):
+        await refresh_nickname.finish("本群未开启舞萌排行榜功能！")
+        return
+    
+    users = db.get_group_users(group_id)
+    if not users:
+        await refresh_nickname.finish("本群暂无用户加入排行榜！")
+        return
+    
+    await refresh_nickname.send(f"正在刷新群昵称，共 {len(users)} 位用户...")
+    
+    try:
+        await update_group_nicknames(bot, group_id)
+        await refresh_nickname.finish("✅ 群昵称刷新完成！")
+    except Exception as e:
+        logger.error(f"刷新群昵称失败: {e}")
+        await refresh_nickname.finish("❌ 刷新群昵称失败，请稍后重试！")
 
 
 @reset_refresh_count.handle()
@@ -893,33 +925,6 @@ async def auto_update_alias():
         logger.error(f"自动更新别名数据时出错: {e}")
 
 
-@scheduler.scheduled_job("interval", minutes=5, id="maimai_auto_update_nicknames")
-async def auto_update_nicknames():
-    """每5分钟自动更新所有群的用户昵称"""
-    logger.info("开始自动更新用户昵称...")
-    
-    try:
-        # 获取所有启用的群
-        enabled_groups = db.get_all_enabled_groups()
-        if not enabled_groups:
-            logger.info("没有启用的群，跳过昵称更新")
-            return
-        
-        # 获取bot实例
-        from nonebot import get_bot
-        try:
-            bot = get_bot()
-        except Exception as e:
-            logger.error(f"获取bot实例失败: {e}")
-            return
-        
-        # 更新每个群的昵称
-        for group_id in enabled_groups:
-            await update_group_nicknames(bot, group_id)
-        
-        logger.info(f"昵称更新完成，共处理 {len(enabled_groups)} 个群")
-    except Exception as e:
-        logger.error(f"自动更新昵称时出错: {e}")
 
 
 # ==================== 启动和关闭事件 ====================
