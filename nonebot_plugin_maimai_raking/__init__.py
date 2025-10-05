@@ -247,7 +247,11 @@ async def _(bot: Bot, event: GroupMessageEvent):
         await refresh_nickname.finish("✅ 群昵称刷新完成！")
     except Exception as e:
         logger.error(f"刷新群昵称失败: {e}")
-        await refresh_nickname.finish("❌ 刷新群昵称失败，请稍后重试！")
+        # 只有在没有发送过消息的情况下才发送失败消息
+        try:
+            await refresh_nickname.finish("❌ 刷新群昵称失败，请稍后重试！")
+        except:
+            pass  # 如果已经发送过消息，忽略这个错误
 
 
 @reset_refresh_count.handle()
@@ -953,7 +957,11 @@ async def _(bot: Bot):
         logger.info(f"开始初始化 {len(enabled_groups)} 个群的用户昵称缓存")
         
         for group_id in enabled_groups:
-            await update_group_nicknames(bot, group_id)
+            try:
+                await update_group_nicknames(bot, group_id)
+            except Exception as e:
+                logger.warning(f"更新群 {group_id} 昵称失败: {e}")
+                continue  # 继续处理其他群
         
         logger.info("用户昵称缓存初始化完成")
     except Exception as e:
