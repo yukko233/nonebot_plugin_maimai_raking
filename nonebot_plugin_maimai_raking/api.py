@@ -142,6 +142,8 @@ class MaimaiAPI:
                         data_json = json.dumps(self.alias_data, ensure_ascii=False)
                         updated_at = datetime.now().isoformat()
                         
+                        # 先清除旧的缓存记录，再插入新的数据
+                        cursor.execute("DELETE FROM alias_cache")
                         cursor.execute(
                             "INSERT INTO alias_cache (data, updated_at) VALUES (?, ?)",
                             (data_json, updated_at)
