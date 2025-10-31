@@ -155,7 +155,6 @@ async def _(bot: Bot, event: GroupMessageEvent):
     group_id = str(event.group_id)
     
     if not db.is_group_enabled(group_id):
-        await refresh_ranking.finish("本群未开启舞萌排行榜功能！")
         return
     
     await refresh_ranking.send("正在刷新排行榜数据，请稍候...")
@@ -212,7 +211,6 @@ async def _(bot: Bot, event: GroupMessageEvent):
     group_id = str(event.group_id)
     
     if not db.is_group_enabled(group_id):
-        await refresh_nicknames.finish("本群未开启舞萌排行榜功能！")
         return
     
     users = db.get_group_users(group_id)
@@ -238,7 +236,6 @@ async def _(bot: Bot, event: GroupMessageEvent):
     group_id = str(event.group_id)
     
     if not db.is_group_enabled(group_id):
-        await refresh_nickname.finish("本群未开启舞萌排行榜功能！")
         return
     
     users = db.get_group_users(group_id)
@@ -265,7 +262,6 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     user_id = str(event.user_id)
     
     if not db.is_group_enabled(group_id):
-        await reset_refresh_count.finish("本群未开启舞萌排行榜功能！")
         return
     
     # 解析参数：支持QQ号或@用户
@@ -316,7 +312,6 @@ async def _(bot: Bot, event: GroupMessageEvent):
     user_id = str(event.user_id)
     
     if not db.is_group_enabled(group_id):
-        await refresh_records.finish("本群未开启舞萌排行榜功能！")
         return
     
     # 检查用户是否在排行榜中
@@ -394,7 +389,6 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     user_id = str(event.user_id)
     
     if not db.is_group_enabled(group_id):
-        await join_ranking.finish("本群未开启舞萌排行榜功能！")
         return
     
     # 解析参数：支持QQ号或@用户
@@ -515,7 +509,6 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     user_id = str(event.user_id)
     
     if not db.is_group_enabled(group_id):
-        await leave_ranking.finish("本群未开启舞萌排行榜功能！")
         return
     
     # 解析参数：支持QQ号或@用户
@@ -584,13 +577,16 @@ query_ranking = on_command("wmrk", priority=10, block=True)
 query_song_info = on_command("wmbm", priority=10, block=True)
 query_rating_ranking = on_command("wmrt", priority=10, block=True)
 
+# wmrt功能开关命令，仅允许群主、管理员和超管操作
+toggle_wmrt = on_command("开启wmrt", aliases={"关闭wmrt"}, priority=10, block=True, 
+                        permission=SUPERUSER | GROUP_ADMIN | GROUP_OWNER)
+
 @query_ranking.handle()
 async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     """查询歌曲排行榜"""
     group_id = str(event.group_id)
     
     if not db.is_group_enabled(group_id):
-        await query_ranking.finish("本群未开启舞萌排行榜功能！")
         return
     
     query = args.extract_plain_text().strip()
@@ -704,12 +700,6 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
 @query_song_info.handle()
 async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     """查询歌曲信息（名称、ID、别名）"""
-    group_id = str(event.group_id)
-    
-    if not db.is_group_enabled(group_id):
-        await query_song_info.finish("本群未开启舞萌排行榜功能！")
-        return
-    
     query = args.extract_plain_text().strip()
     if not query:
         await query_song_info.finish("请输入歌曲名称、别名或 ID！\n例如: wmbm 群青")
@@ -760,14 +750,29 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     await query_song_info.finish(result)
 
 
+@toggle_wmrt.handle()
+async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
+    """切换wmrt功能开关"""
+    group_id = str(event.group_id)
+    command = event.get_message().extract_plain_text().strip()
+    
+    
+    # 根据命令切换wmrt功能开关
+    if command == "开启wmrt":
+        db.enable_wmrt(group_id)
+        await toggle_wmrt.finish("✅ 已开启本群的Rating排行榜功能！")
+    elif command == "关闭wmrt":
+        db.disable_wmrt(group_id)
+        await toggle_wmrt.finish("✅ 已关闭本群的Rating排行榜功能！")
+
+
 @query_rating_ranking.handle()
 async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     """查询群内 Rating 排行榜"""
     group_id = str(event.group_id)
     
-    if not db.is_group_enabled(group_id):
-        await query_rating_ranking.finish("本群未开启舞萌排行榜功能！")
-        return
+
+
     
     # 解析分段参数
     arg_text = args.extract_plain_text().strip()

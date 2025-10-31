@@ -42,9 +42,19 @@ class Database:
                 CREATE TABLE IF NOT EXISTS groups (
                     group_id TEXT PRIMARY KEY,
                     enabled INTEGER NOT NULL DEFAULT 1,
+                    wmrt_enabled INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL
                 )
             """)
+            
+            # 检查并添加 wmrt_enabled 列（如果不存在）
+            try:
+                cursor.execute("ALTER TABLE groups ADD COLUMN wmrt_enabled INTEGER NOT NULL DEFAULT 1")
+                logger.info("已为groups表添加wmrt_enabled列")
+            except sqlite3.OperationalError as e:
+                # 列已存在，忽略错误
+                if "duplicate column name" not in str(e).lower():
+                    raise e
             
             # 创建用户表
             cursor.execute("""
@@ -108,54 +118,111 @@ class Database:
     # ==================== 群组管理 ====================
     
     def enable_group(self, group_id: str):
-        """开启群组功能"""
+        """启用群组功能"""
         conn = self._get_connection()
         cursor = conn.cursor()
         
         try:
-            # 检查群组是否存在
-            cursor.execute("SELECT group_id FROM groups WHERE group_id = ?", (group_id,))
-            if cursor.fetchone():
-                # 更新为启用
-                cursor.execute(
-                    "UPDATE groups SET enabled = 1 WHERE group_id = ?",
-                    (group_id,)
-                )
-            else:
-                # 插入新群组
-                cursor.execute(
-                    "INSERT INTO groups (group_id, enabled, created_at) VALUES (?, 1, ?)",
-                    (group_id, datetime.now().isoformat())
-                )
+            # 使用 INSERT OR IGNORE 避免重复插入
+            cursor.execute(
+                "INSERT OR IGNORE INTO groups (group_id, enabled, wmrt_enabled, created_at) VALUES (?, 1, 1, ?)",
+                (group_id, datetime.now().isoformat())
+            )
+            
+            # 更新现有记录的启用状态
+            cursor.execute(
+                "UPDATE groups SET enabled = 1 WHERE group_id = ?",
+                (group_id,)
+            )
             
             conn.commit()
-            logger.info(f"群组 {group_id} 已开启舞萌排行榜功能")
+            logger.info(f"群组 {group_id} 功能已启用")
         except Exception as e:
-            logger.error(f"开启群组 {group_id} 失败: {e}")
+            logger.error(f"启用群组 {group_id} 功能失败: {e}")
             conn.rollback()
         finally:
             conn.close()
     
     def disable_group(self, group_id: str):
-        """关闭群组功能"""
+        """禁用群组功能"""
         conn = self._get_connection()
         cursor = conn.cursor()
         
         try:
+            # 使用 INSERT OR IGNORE 避免重复插入
+            cursor.execute(
+                "INSERT OR IGNORE INTO groups (group_id, enabled, wmrt_enabled, created_at) VALUES (?, 0, 1, ?)",
+                (group_id, datetime.now().isoformat())
+            )
+            
+            # 更新现有记录的启用状态
             cursor.execute(
                 "UPDATE groups SET enabled = 0 WHERE group_id = ?",
                 (group_id,)
             )
+            
             conn.commit()
-            logger.info(f"群组 {group_id} 已关闭舞萌排行榜功能")
+            logger.info(f"群组 {group_id} 功能已禁用")
         except Exception as e:
-            logger.error(f"关闭群组 {group_id} 失败: {e}")
+            logger.error(f"禁用群组 {group_id} 功能失败: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
+    
+    def enable_wmrt(self, group_id: str):
+        """启用群组的wmrt功能"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # 确保群组存在
+            cursor.execute(
+                "INSERT OR IGNORE INTO groups (group_id, enabled, wmrt_enabled, created_at) VALUES (?, 1, 1, ?)",
+                (group_id, datetime.now().isoformat())
+            )
+            
+            # 更新wmrt启用状态
+            cursor.execute(
+                "UPDATE groups SET wmrt_enabled = 1 WHERE group_id = ?",
+                (group_id,)
+            )
+            
+            conn.commit()
+            logger.info(f"群组 {group_id} 的wmrt功能已启用")
+        except Exception as e:
+            logger.error(f"启用群组 {group_id} 的wmrt功能失败: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
+    
+    def disable_wmrt(self, group_id: str):
+        """禁用群组的wmrt功能"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # 确保群组存在
+            cursor.execute(
+                "INSERT OR IGNORE INTO groups (group_id, enabled, wmrt_enabled, created_at) VALUES (?, 1, 0, ?)",
+                (group_id, datetime.now().isoformat())
+            )
+            
+            # 更新wmrt启用状态
+            cursor.execute(
+                "UPDATE groups SET wmrt_enabled = 0 WHERE group_id = ?",
+                (group_id,)
+            )
+            
+            conn.commit()
+            logger.info(f"群组 {group_id} 的wmrt功能已禁用")
+        except Exception as e:
+            logger.error(f"禁用群组 {group_id} 的wmrt功能失败: {e}")
             conn.rollback()
         finally:
             conn.close()
     
     def is_group_enabled(self, group_id: str) -> bool:
-        """检查群组是否开启功能"""
+        """检查群组是否启用"""
         conn = self._get_connection()
         cursor = conn.cursor()
         
@@ -165,10 +232,30 @@ class Database:
                 (group_id,)
             )
             row = cursor.fetchone()
-            return bool(row["enabled"]) if row else False
+            return row["enabled"] == 1 if row else False
         except Exception as e:
-            logger.error(f"检查群组 {group_id} 状态失败: {e}")
+            logger.error(f"检查群组 {group_id} 启用状态失败: {e}")
             return False
+        finally:
+            conn.close()
+    
+    def is_wmrt_enabled(self, group_id: str) -> bool:
+        """检查群组的wmrt功能是否启用"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute(
+                "SELECT wmrt_enabled FROM groups WHERE group_id = ?",
+                (group_id,)
+            )
+            row = cursor.fetchone()
+            # 如果没有记录或者wmrt_enabled为NULL，则默认开启
+            return row["wmrt_enabled"] == 1 if row and row["wmrt_enabled"] is not None else True
+        except Exception as e:
+            logger.error(f"检查群组 {group_id} 的wmrt功能启用状态失败: {e}")
+            # 出错时默认开启
+            return True
         finally:
             conn.close()
     
