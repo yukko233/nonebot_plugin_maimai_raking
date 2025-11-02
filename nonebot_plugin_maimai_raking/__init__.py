@@ -65,6 +65,16 @@ api = MaimaiAPI(config.maimai_developer_token)
 # 群昵称缓存
 group_nickname_cache: dict = {}
 
+
+def refresh_custom_alias_cache():
+    """同步数据库中的自定义别名至 API 缓存"""
+    custom_aliases = db.get_all_custom_aliases()
+    api.set_custom_aliases(custom_aliases)
+
+
+def _equals_ignore_case(a: str, b: str) -> bool:
+    return a.lower() == b.lower()
+
 async def get_group_nickname(bot: Bot, qq: str, group_id: str) -> str:
     """获取群内昵称（从缓存中获取）"""
     cache_key = f"{group_id}_{qq}"
@@ -577,6 +587,20 @@ query_ranking = on_command("wmrk", priority=10, block=True)
 query_song_info = on_command("wmbm", priority=10, block=True)
 query_rating_ranking = on_command("wmrt", priority=10, block=True)
 
+add_alias_command = on_command(
+    "wmbm+",
+    priority=10,
+    block=True,
+    permission=SUPERUSER | GROUP_ADMIN | GROUP_OWNER,
+)
+
+remove_alias_command = on_command(
+    "wmbm-",
+    priority=10,
+    block=True,
+    permission=SUPERUSER | GROUP_ADMIN | GROUP_OWNER,
+)
+
 # wmrt功能开关命令，仅允许群主、管理员和超管操作
 toggle_wmrt = on_command("开启wmrt", aliases={"关闭wmrt"}, priority=10, block=True, 
                         permission=SUPERUSER | GROUP_ADMIN | GROUP_OWNER)
@@ -750,6 +774,155 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     await query_song_info.finish(result)
 
 
+@add_alias_command.handle()
+async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
+    """为歌曲新增自定义别名"""
+    group_id = str(event.group_id)
+
+    if not db.is_group_enabled(group_id):
+        return
+
+    arg_text = args.extract_plain_text().strip()
+    if not arg_text:
+        await add_alias_command.finish("请提供歌曲关键词和要添加的别名。\n格式：wmbm+ 歌曲关键词 新别名")
+        return
+
+    if not api.alias_data:
+        await api.load_alias_data()
+        refresh_custom_alias_cache()
+
+    parts = arg_text.rsplit(maxsplit=1)
+    if len(parts) < 2:
+        await add_alias_command.finish("格式错误！请使用：wmbm+ 歌曲关键词 新别名")
+        return
+
+    song_query = parts[0].strip()
+    new_alias = parts[1].strip()
+
+    if not song_query or not new_alias:
+        await add_alias_command.finish("歌曲关键词和新别名均不能为空。")
+        return
+
+    if len(new_alias) > 40:
+        await add_alias_command.finish("别名过长，请控制在40个字符以内。")
+        return
+
+    try:
+        song = await api.find_song(song_query)
+    except Exception as e:
+        logger.error(f"查找歌曲时出错: {e}")
+        await add_alias_command.finish("❌ 查询失败，请稍后重试！")
+        return
+
+    if not song:
+        await add_alias_command.finish("❌ 未找到对应歌曲，请检查输入。")
+        return
+
+    song_id = int(song["id"])
+    song_title = song.get("title", "未知")
+
+    if _equals_ignore_case(song_title, new_alias):
+        await add_alias_command.finish("别名不能与歌曲原名完全相同。")
+        return
+
+    existing_song_id = api.find_song_id_by_alias(new_alias)
+    if existing_song_id:
+        if existing_song_id == song_id:
+            await add_alias_command.finish("该别名已存在于当前歌曲中，无需重复添加。")
+        else:
+            await add_alias_command.finish("该别名已被其他歌曲使用，无法重复添加。")
+        return
+
+    success = db.add_custom_alias(song_id, new_alias)
+    if not success:
+        await add_alias_command.finish("添加别名失败，可能已存在同名别名。")
+        return
+
+    api.add_custom_alias(song_id, new_alias)
+
+    custom_aliases = db.get_custom_aliases(song_id)
+    custom_display = "、".join(custom_aliases) if custom_aliases else "无"
+
+    msg = (
+        "✅ 别名添加成功！\n"
+        f"歌曲: {song_title}\n"
+        f"新增别名: {new_alias}\n"
+        f"当前自定义别名: {custom_display}"
+    )
+    await add_alias_command.finish(msg)
+
+
+@remove_alias_command.handle()
+async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
+    """移除歌曲的自定义别名"""
+    group_id = str(event.group_id)
+
+    if not db.is_group_enabled(group_id):
+        return
+
+    arg_text = args.extract_plain_text().strip()
+    if not arg_text:
+        await remove_alias_command.finish("请提供歌曲关键词和要删除的别名。\n格式：wmbm- 歌曲关键词 目标别名")
+        return
+
+    if not api.alias_data:
+        await api.load_alias_data()
+        refresh_custom_alias_cache()
+
+    parts = arg_text.rsplit(maxsplit=1)
+    if len(parts) < 2:
+        await remove_alias_command.finish("格式错误！请使用：wmbm- 歌曲关键词 目标别名")
+        return
+
+    song_query = parts[0].strip()
+    target_alias = parts[1].strip()
+
+    if not song_query or not target_alias:
+        await remove_alias_command.finish("歌曲关键词和目标别名均不能为空。")
+        return
+
+    try:
+        song = await api.find_song(song_query)
+    except Exception as e:
+        logger.error(f"查找歌曲时出错: {e}")
+        await remove_alias_command.finish("❌ 查询失败，请稍后重试！")
+        return
+
+    if not song:
+        await remove_alias_command.finish("❌ 未找到对应歌曲，请检查输入。")
+        return
+
+    song_id = int(song["id"])
+    song_title = song.get("title", "未知")
+
+    custom_aliases = db.get_custom_aliases(song_id)
+    if not custom_aliases:
+        await remove_alias_command.finish("该歌曲暂无自定义别名。")
+        return
+
+    if not any(_equals_ignore_case(alias, target_alias) for alias in custom_aliases):
+        await remove_alias_command.finish("未找到要移除的自定义别名。")
+        return
+
+    success = db.remove_custom_alias(song_id, target_alias)
+    if not success:
+        await remove_alias_command.finish("移除别名失败，请稍后再试。")
+        return
+
+    api.remove_custom_alias(song_id, target_alias)
+
+    remaining_aliases = db.get_custom_aliases(song_id)
+    remaining_display = "、".join(remaining_aliases) if remaining_aliases else "无"
+
+    msg = (
+        "✅ 别名已移除！\n"
+        f"歌曲: {song_title}\n"
+        f"已移除别名: {target_alias}\n"
+        f"当前自定义别名: {remaining_display}"
+    )
+    await remove_alias_command.finish(msg)
+
+
 @toggle_wmrt.handle()
 async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     """切换wmrt功能开关"""
@@ -907,8 +1080,13 @@ async def auto_update_records():
     all_users = db.get_all_users()
     success_count = 0
     fail_count = 0
+    today = datetime.now().strftime("%Y-%m-%d")
     
     for qq in all_users:
+        # 如果当日已有手动刷新记录，则跳过自动更新
+        if db.get_daily_refresh_count(qq, today) > 0:
+            logger.info(f"用户 {qq} 当日已有手动刷新记录，跳过自动更新")
+            continue
         try:
             records = await api.get_player_records(qq)
             if records:
@@ -930,6 +1108,7 @@ async def auto_update_alias():
     
     try:
         await api.load_alias_data_force()
+        refresh_custom_alias_cache()
         logger.info("别名数据自动更新完成！")
     except Exception as e:
         logger.error(f"自动更新别名数据时出错: {e}")
@@ -946,6 +1125,7 @@ async def _():
     # 预加载歌曲数据和别名数据
     await api.load_music_data()
     await api.load_alias_data()
+    refresh_custom_alias_cache()
     logger.info("歌曲数据和别名数据加载完成")
 
 

@@ -34,6 +34,9 @@ class MaimaiAPI:
         
         # HTTP 客户端
         self.client = httpx.AsyncClient(timeout=30.0)
+        
+        # 自定义别名缓存
+        self.custom_alias_map: Dict[int, List[str]] = {}
     
     def _get_cache_connection(self) -> sqlite3.Connection:
         """获取缓存数据库连接"""
@@ -211,6 +214,139 @@ class MaimaiAPI:
         except Exception as e:
             logger.error(f"强制更新别名数据时出错: {e}")
     
+    # ==================== 自定义别名处理 ====================
+    def _equals_ignore_case(self, a: str, b: str) -> bool:
+        return a.lower() == b.lower()
+
+    def _ensure_alias_entry(self, song_id: int) -> List[str]:
+        if self.alias_data is None:
+            self.alias_data = []
+        song_id = int(song_id)
+        for item in self.alias_data:
+            try:
+                current_song_id = int(item.get("SongID"))
+            except (ValueError, TypeError):
+                continue
+            if current_song_id == song_id:
+                alias_list = item.get("Alias")
+                if not isinstance(alias_list, list):
+                    alias_list = []
+                    item["Alias"] = alias_list
+                return alias_list
+        new_item = {"SongID": song_id, "Alias": []}
+        self.alias_data.append(new_item)
+        return new_item["Alias"]
+
+    def set_custom_aliases(self, custom_aliases: Dict[int, List[str]]):
+        """覆盖自定义别名映射并同步到 alias_data"""
+        self.custom_alias_map = {}
+        if not custom_aliases:
+            return
+        for song_id, aliases in custom_aliases.items():
+            if not aliases:
+                continue
+            normalized_aliases: List[str] = []
+            for alias in aliases:
+                if not isinstance(alias, str):
+                    continue
+                alias_str = alias.strip()
+                if not alias_str:
+                    continue
+                if any(self._equals_ignore_case(existing, alias_str) for existing in normalized_aliases):
+                    continue
+                normalized_aliases.append(alias_str)
+                alias_list = self._ensure_alias_entry(song_id)
+                if not any(self._equals_ignore_case(existing, alias_str) for existing in alias_list):
+                    alias_list.append(alias_str)
+            if normalized_aliases:
+                self.custom_alias_map[int(song_id)] = normalized_aliases
+
+    def add_custom_alias(self, song_id: int, alias: str):
+        """向缓存中新增自定义别名"""
+        if not isinstance(alias, str):
+            return
+        alias_str = alias.strip()
+        if not alias_str:
+            return
+        song_id = int(song_id)
+        alias_list = self._ensure_alias_entry(song_id)
+        if not any(self._equals_ignore_case(existing, alias_str) for existing in alias_list):
+            alias_list.append(alias_str)
+        custom_list = self.custom_alias_map.setdefault(song_id, [])
+        if not any(self._equals_ignore_case(existing, alias_str) for existing in custom_list):
+            custom_list.append(alias_str)
+
+    def remove_custom_alias(self, song_id: int, alias: str):
+        """从缓存中移除自定义别名"""
+        if not isinstance(alias, str):
+            return
+        alias_str = alias.strip()
+        if not alias_str:
+            return
+        song_id = int(song_id)
+        if song_id in self.custom_alias_map:
+            self.custom_alias_map[song_id] = [
+                existing for existing in self.custom_alias_map[song_id]
+                if not self._equals_ignore_case(existing, alias_str)
+            ]
+            if not self.custom_alias_map[song_id]:
+                del self.custom_alias_map[song_id]
+        if not self.alias_data:
+            return
+        for item in self.alias_data:
+            try:
+                current_song_id = int(item.get("SongID"))
+            except (ValueError, TypeError):
+                continue
+            if current_song_id != song_id:
+                continue
+            alias_list = item.get("Alias")
+            if not isinstance(alias_list, list):
+                return
+            item["Alias"] = [
+                existing for existing in alias_list
+                if not isinstance(existing, str) or not self._equals_ignore_case(existing, alias_str)
+            ]
+            return
+
+    def get_aliases_for_song(self, song_id: int) -> List[str]:
+        """获取指定歌曲的所有别名（包含自定义别名）"""
+        if not self.alias_data:
+            return []
+        song_id = int(song_id)
+        for item in self.alias_data:
+            try:
+                current_song_id = int(item.get("SongID"))
+            except (ValueError, TypeError):
+                continue
+            if current_song_id == song_id:
+                alias_list = item.get("Alias")
+                if isinstance(alias_list, list):
+                    return [alias for alias in alias_list if isinstance(alias, str)]
+                return []
+        return []
+
+    def find_song_id_by_alias(self, alias: str) -> Optional[int]:
+        """根据别名查找歌曲 ID"""
+        if not alias or not self.alias_data:
+            return None
+        alias_lower = alias.strip().lower()
+        if not alias_lower:
+            return None
+        for item in self.alias_data:
+            alias_list = item.get("Alias")
+            if not isinstance(alias_list, list):
+                continue
+            for existing in alias_list:
+                if not isinstance(existing, str):
+                    continue
+                if existing.lower() == alias_lower:
+                    try:
+                        return int(item.get("SongID"))
+                    except (ValueError, TypeError):
+                        continue
+        return None
+
     async def get_player_records(self, qq: str) -> Optional[Dict[str, Any]]:
         """获取玩家完整成绩
         

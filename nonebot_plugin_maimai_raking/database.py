@@ -96,6 +96,22 @@ class Database:
                 )
             """)
             
+            # 创建自定义别名表
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS custom_alias (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    song_id INTEGER NOT NULL,
+                    alias TEXT NOT NULL COLLATE NOCASE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(alias)
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_custom_alias_song_id
+                ON custom_alias(song_id)
+            """)
+            
             # 创建索引
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_user_groups_group_id 
@@ -493,6 +509,96 @@ class Database:
         except Exception as e:
             logger.error(f"重置用户 {qq} 的刷新次数失败: {e}")
             conn.rollback()
+        finally:
+            conn.close()
+
+    # ==================== 自定义别名管理 ====================
+    def add_custom_alias(self, song_id: int, alias: str) -> bool:
+        """新增自定义别名"""
+        alias = alias.strip()
+        if not alias:
+            return False
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            now = datetime.now().isoformat()
+            cursor.execute(
+                "INSERT INTO custom_alias (song_id, alias, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                (int(song_id), alias, now, now)
+            )
+            conn.commit()
+            logger.info(f"为歌曲 {song_id} 新增自定义别名: {alias}")
+            return True
+        except sqlite3.IntegrityError:
+            logger.warning(f"自定义别名已存在，song_id={song_id}, alias={alias}")
+            conn.rollback()
+            return False
+        except Exception as e:
+            logger.error(f"新增自定义别名失败: song_id={song_id}, alias={alias}, error={e}")
+            conn.rollback()
+            return False
+        finally:
+            conn.close()
+
+    def remove_custom_alias(self, song_id: int, alias: str) -> bool:
+        """移除自定义别名"""
+        alias = alias.strip()
+        if not alias:
+            return False
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "DELETE FROM custom_alias WHERE song_id = ? AND alias = ?",
+                (int(song_id), alias)
+            )
+            removed = cursor.rowcount > 0
+            if removed:
+                conn.commit()
+                logger.info(f"移除歌曲 {song_id} 的自定义别名: {alias}")
+            else:
+                conn.rollback()
+            return removed
+        except Exception as e:
+            logger.error(f"移除自定义别名失败: song_id={song_id}, alias={alias}, error={e}")
+            conn.rollback()
+            return False
+        finally:
+            conn.close()
+
+    def get_custom_aliases(self, song_id: int) -> List[str]:
+        """获取指定歌曲的所有自定义别名"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT alias FROM custom_alias WHERE song_id = ? ORDER BY alias COLLATE NOCASE",
+                (int(song_id),)
+            )
+            return [row["alias"] for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"获取歌曲 {song_id} 的自定义别名失败: {e}")
+            return []
+        finally:
+            conn.close()
+
+    def get_all_custom_aliases(self) -> Dict[int, List[str]]:
+        """获取所有自定义别名"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                "SELECT song_id, alias FROM custom_alias ORDER BY song_id, alias COLLATE NOCASE"
+            )
+            result: Dict[int, List[str]] = {}
+            for row in cursor.fetchall():
+                song_id = int(row["song_id"])
+                alias_list = result.setdefault(song_id, [])
+                alias_list.append(row["alias"])
+            return result
+        except Exception as e:
+            logger.error(f"获取全部自定义别名失败: {e}")
+            return {}
         finally:
             conn.close()
 
