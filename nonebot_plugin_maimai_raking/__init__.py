@@ -3,7 +3,7 @@ nonebot-plugin-maimai-raking
 
 一个基于 NoneBot2 的舞萌 DX 分群排行榜插件
 """
-from nonebot import require, get_driver, on_command, get_plugin_config
+from nonebot import require, get_driver, on_command, get_plugin_config, get_bots
 from nonebot.plugin import PluginMetadata
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageSegment
 from nonebot.permission import SUPERUSER
@@ -26,10 +26,11 @@ from .render import render_ranking_image
 __plugin_meta__ = PluginMetadata(
     name="舞萌排行榜",
     description="一个基于 NoneBot2 的舞萌 DX 分群排行榜插件",
-    usage="""
+    usage=""" 
     超管命令：
     - 刷新排行榜
     - 重置刷新次数 <QQ号/@用户>
+    - 更新歌曲数据
     
     管理员命令：
     - 开启舞萌排行榜
@@ -215,6 +216,13 @@ reset_refresh_count = on_command(
     block=True,
 )
 
+update_music_data = on_command(
+    "更新歌曲数据",
+    permission=SUPERUSER,
+    priority=5,
+    block=True,
+)
+
 @refresh_nicknames.handle()
 async def _(bot: Bot, event: GroupMessageEvent):
     """手动刷新群昵称"""
@@ -311,6 +319,29 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     except Exception as e:
         logger.error(f"重置用户 {qq} 的刷新次数失败: {e}")
         await reset_refresh_count.finish("❌ 重置失败，请稍后重试！")
+
+
+@update_music_data.handle()
+async def _(bot: Bot, event: GroupMessageEvent):
+    """更新水鱼歌曲数据"""
+    await update_music_data.send("正在更新歌曲数据，请稍候...")
+    
+    try:
+        await api.load_music_data()
+        
+        # 检查是否成功加载
+        if api.music_data:
+            song_count = len(api.music_data)
+            await update_music_data.send(
+                f"✅ 歌曲数据更新完成！\n"
+                f"共加载 {song_count} 首歌曲"
+            )
+        else:
+            await update_music_data.send("❌ 歌曲数据更新失败，未加载到任何歌曲数据！")
+            
+    except Exception as e:
+        logger.error(f"更新歌曲数据时出错: {e}")
+        await update_music_data.send("❌ 更新歌曲数据失败，请稍后重试！")
 
 
 refresh_records = on_command("刷新成绩", priority=10, block=True)
@@ -1112,6 +1143,43 @@ async def auto_update_alias():
         logger.info("别名数据自动更新完成！")
     except Exception as e:
         logger.error(f"自动更新别名数据时出错: {e}")
+
+
+@scheduler.scheduled_job("cron", hour=0, minute=10, id="maimai_auto_update_nicknames")
+async def auto_update_nicknames():
+    """每天0点10分自动更新所有启用群的昵称"""
+    logger.info("开始自动更新群昵称...")
+    
+    try:
+        # 获取所有连接的 bot
+        bots = get_bots()
+        if not bots:
+            logger.warning("没有连接的 bot，跳过昵称更新")
+            return
+        
+        # 获取所有启用的群
+        enabled_groups = db.get_all_enabled_groups()
+        if not enabled_groups:
+            logger.info("没有启用的群，跳过昵称更新")
+            return
+        
+        logger.info(f"开始更新 {len(enabled_groups)} 个群的用户昵称")
+        success_count = 0
+        fail_count = 0
+        
+        # 遍历所有 bot（通常只有一个）
+        for bot_id, bot in bots.items():
+            for group_id in enabled_groups:
+                try:
+                    await update_group_nicknames(bot, group_id)
+                    success_count += 1
+                except Exception as e:
+                    fail_count += 1
+                    logger.warning(f"更新群 {group_id} 昵称失败: {e}")
+        
+        logger.info(f"自动更新群昵称完成！成功: {success_count} 个群，失败: {fail_count} 个群")
+    except Exception as e:
+        logger.error(f"自动更新群昵称时出错: {e}")
 
 
 
