@@ -426,15 +426,13 @@ join_ranking = on_command("加入排行榜", priority=10, block=True)
 @join_ranking.handle()
 async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     """加入排行榜"""
-    group_id = str(event.group_id)
+    current_group_id = str(event.group_id)
     user_id = str(event.user_id)
     
-    if not db.is_group_enabled(group_id):
-        return
-    
-    # 解析参数：支持QQ号或@用户
+    # 解析参数：支持QQ号或@用户 + 可选的群号
     arg_text = args.extract_plain_text().strip()
     target_qq = None
+    target_group_id = None
     
     # 检查是否有@用户
     if event.message:
@@ -443,56 +441,111 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
                 target_qq = str(segment.data.get("qq", ""))
                 break
     
+    # 解析参数
+    if arg_text:
+        parts = arg_text.split()
+        if target_qq:
+            # 有@用户，第一个参数是@用户，后面的是群号
+            if len(parts) >= 1:
+                target_group_id = parts[0] if parts[0].isdigit() else None
+        else:
+            # 没有@用户，第一个参数是QQ号，第二个参数是群号（如果有）
+            if len(parts) >= 1:
+                if parts[0].isdigit():
+                    target_qq = parts[0]
+                    if len(parts) >= 2 and parts[1].isdigit():
+                        target_group_id = parts[1]
+    
     # 确定目标QQ号
     if target_qq:
         # 有@用户，使用@的用户
         qq = target_qq
-    elif arg_text:
-        # 有文本参数，使用文本参数
-        qq = arg_text
+    elif target_qq is None and arg_text:
+        # 有文本参数，使用文本参数作为QQ号
+        parts = arg_text.split()
+        qq = parts[0] if parts and parts[0].isdigit() else user_id
     else:
         # 无参数，使用自己
         qq = user_id
     
-    # 如果指定了其他QQ号，需要管理员权限
-    if qq != user_id:
-        # 检查权限：超管、群主、群管理员
+    # 确定目标群号
+    if target_group_id:
+        # 指定了群号
+        group_id = target_group_id
+        # 检查是否为有效的群号格式
+        if not group_id.isdigit():
+            await join_ranking.finish("❌ 群号格式错误，请输入正确的群号！")
+            return
+    else:
+        # 未指定群号，默认为当前群
+        group_id = current_group_id
+    
+    # 如果指定了其他QQ号或群号，需要管理员权限
+    # 特殊处理：如果指定了群号，则只有超管可以操作
+    is_specified_group = group_id != current_group_id
+    is_other_user = qq != user_id
+    
+    if is_other_user or is_specified_group:
+        # 检查权限
         has_permission = False
         try:
             # 检查是否为超管
             if await SUPERUSER(bot, event):
                 has_permission = True
             else:
-                # 检查是否为群主或群管理员
-                member_info = await bot.get_group_member_info(group_id=int(group_id), user_id=int(user_id))
-                role = member_info.get("role", "member")
-                if role in ["owner", "admin"]:
-                    has_permission = True
+                # 对于指定群的操作，仅允许超管
+                if is_specified_group:
+                    has_permission = False
+                else:
+                    # 检查是否为群主或群管理员（仅为他人加入当前群的情况）
+                    member_info = await bot.get_group_member_info(group_id=int(current_group_id), user_id=int(user_id))
+                    role = member_info.get("role", "member")
+                    if role in ["owner", "admin"]:
+                        has_permission = True
         except Exception as e:
             logger.error(f"权限检查失败: {e}")
             await join_ranking.finish("❌ 权限检查失败，请稍后重试！")
             return
         
         if not has_permission:
-            await join_ranking.finish("❌ 只有群主、管理员或超级管理员才能为他人加入排行榜！")
+            if is_other_user and is_specified_group:
+                await join_ranking.finish("❌ 只有超级管理员才能为他人加入指定群的排行榜！")
+            elif is_other_user:
+                await join_ranking.finish("❌ 只有群主、管理员或超级管理员才能为他人加入排行榜！")
+            else:
+                await join_ranking.finish("❌ 只有超级管理员才能加入指定群的排行榜！")
             return
     
-    # 如果指定了其他QQ号，检查该用户是否在本群中
-    if arg_text and arg_text != user_id:
+    # 检查目标群是否启用了排行榜功能
+    if not db.is_group_enabled(group_id):
+        if group_id == current_group_id:
+            await join_ranking.finish("❌ 当前群未启用排行榜功能！")
+        else:
+            await join_ranking.finish(f"❌ 群 {group_id} 未启用排行榜功能！")
+        return
+    
+    # 如果指定了其他QQ号且是当前群，检查该用户是否在本群中
+    if arg_text and arg_text != user_id and group_id == current_group_id:
         try:
             # 尝试获取群成员信息来验证用户是否在群中
-            await bot.get_group_member_info(group_id=int(group_id), user_id=int(qq))
+            await bot.get_group_member_info(group_id=int(current_group_id), user_id=int(qq))
         except Exception as e:
-            logger.warning(f"检查用户 {qq} 是否在群 {group_id} 中失败: {e}")
+            logger.warning(f"检查用户 {qq} 是否在群 {current_group_id} 中失败: {e}")
             await join_ranking.finish(f"❌ 用户 {qq} 不在本群中，无法加入排行榜！")
             return
     
     # 检查用户是否已经加入
     if db.is_user_in_group(qq, group_id):
         if qq == user_id:
-            await join_ranking.finish("你已经在本群排行榜中了！")
+            if group_id == current_group_id:
+                await join_ranking.finish("你已经在本群排行榜中了！")
+            else:
+                await join_ranking.finish(f"你已经在群 {group_id} 的排行榜中了！")
         else:
-            await join_ranking.finish(f"用户 {qq} 已经在本群排行榜中了！")
+            if group_id == current_group_id:
+                await join_ranking.finish(f"用户 {qq} 已经在本群排行榜中了！")
+            else:
+                await join_ranking.finish(f"用户 {qq} 已经在群 {group_id} 的排行榜中了！")
         return
     
     # 尝试获取用户数据验证
