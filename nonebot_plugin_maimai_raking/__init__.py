@@ -1236,10 +1236,11 @@ async def _(bot: Bot, event: GroupMessageEvent):
         if cleaned_count > 0:
             await clean_database.finish(f"✅ 清理完成！共清理了 {cleaned_count} 个已退出群组的数据。")
         else:
-            await clean_database.finish("✅ 数据库清理完成！没有发现已退出的群组。")
+            await clean_database.finish("✅ 数据库清理完成！没有发现已退出群组。")
     except Exception as e:
         logger.error(f"清理数据库时出错: {e}")
         await clean_database.finish("❌ 清理数据库时发生错误，请查看日志！")
+        return  # 添加return语句确保不会继续执行
 
 
 # ==================== 定时任务 ====================
