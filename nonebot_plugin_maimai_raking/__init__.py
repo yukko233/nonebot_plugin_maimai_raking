@@ -1223,9 +1223,9 @@ clean_database = on_command(
 @clean_database.handle()
 async def _(bot: Bot, event: GroupMessageEvent):
     """清理已退出群组的数据（仅超管可用）"""
-    await clean_database.send("正在清理已退出群组的数据，请稍候...")
-    
     try:
+        await clean_database.send("正在清理已退出群组的数据，请稍候...")
+        
         # 获取当前机器人加入的所有群组
         groups = await bot.get_group_list()
         current_group_ids = [str(group["group_id"]) for group in groups]
