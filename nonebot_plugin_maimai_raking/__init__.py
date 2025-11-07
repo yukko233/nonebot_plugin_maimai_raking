@@ -1225,7 +1225,12 @@ async def _(bot: Bot, event: GroupMessageEvent):
     """清理已退出群组的数据（仅超管可用）"""
     try:
         await clean_database.send("正在清理已退出群组的数据，请稍候...")
-        
+    except Exception as e:
+        logger.error(f"发送清理消息时出错: {e}")
+        # 如果发送消息失败，直接返回而不继续执行
+        return
+    
+    try:
         # 获取当前机器人加入的所有群组
         groups = await bot.get_group_list()
         current_group_ids = [str(group["group_id"]) for group in groups]
@@ -1239,8 +1244,12 @@ async def _(bot: Bot, event: GroupMessageEvent):
             await clean_database.finish("✅ 数据库清理完成！没有发现已退出群组。")
     except Exception as e:
         logger.error(f"清理数据库时出错: {e}")
-        await clean_database.finish("❌ 清理数据库时发生错误，请查看日志！")
-        return  # 添加return语句确保不会继续执行
+        try:
+            await clean_database.finish("❌ 清理数据库时发生错误，请查看日志！")
+        except:
+            # 如果发送错误消息也失败，至少记录日志
+            logger.error("发送错误消息时也出错")
+        return
 
 
 # ==================== 定时任务 ====================
