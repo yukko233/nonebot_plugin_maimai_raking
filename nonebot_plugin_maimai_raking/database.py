@@ -275,6 +275,20 @@ class Database:
         finally:
             conn.close()
     
+    def get_all_enabled_groups(self) -> List[str]:
+        """获取所有启用的群组"""
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            cursor.execute("SELECT group_id FROM groups WHERE enabled = 1")
+            return [row["group_id"] for row in cursor.fetchall()]
+        except Exception as e:
+            logger.error(f"获取所有启用群组列表失败: {e}")
+            return []
+        finally:
+            conn.close()
+    
     # ==================== 用户管理 ====================
     
     def add_user_to_group(self, qq: str, group_id: str):
