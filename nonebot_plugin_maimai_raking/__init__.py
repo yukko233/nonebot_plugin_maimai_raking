@@ -1223,6 +1223,7 @@ clean_database = on_command(
 @clean_database.handle()
 async def _(bot: Bot, event: GroupMessageEvent):
     """清理已退出群组的数据（仅超管可用）"""
+    # 发送清理消息
     try:
         await clean_database.send("正在清理已退出群组的数据，请稍候...")
     except Exception as e:
@@ -1242,13 +1243,19 @@ async def _(bot: Bot, event: GroupMessageEvent):
             await clean_database.finish(f"✅ 清理完成！共清理了 {cleaned_count} 个已退出群组的数据。")
         else:
             await clean_database.finish("✅ 数据库清理完成！没有发现已退出群组。")
+    except FinishedException:
+        # 如果是FinishedException异常，说明已经调用了finish()，直接返回
+        return
     except Exception as e:
-        logger.error(f"清理数据库时出错: {e}")
+        logger.error(f"清理数据库时出错: {e}", exc_info=True)
         try:
             await clean_database.finish("❌ 清理数据库时发生错误，请查看日志！")
-        except:
+        except FinishedException:
+            # 如果是FinishedException异常，说明已经调用了finish()，直接返回
+            return
+        except Exception as send_error:
             # 如果发送错误消息也失败，至少记录日志
-            logger.error("发送错误消息时也出错")
+            logger.error(f"发送错误消息时也出错: {send_error}", exc_info=True)
         return
 
 
