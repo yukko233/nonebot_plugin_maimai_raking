@@ -31,6 +31,7 @@ __plugin_meta__ = PluginMetadata(
     - 刷新排行榜
     - 重置刷新次数 <QQ号/@用户>
     - 更新歌曲数据
+    - 清理数据库
     
     管理员命令：
     - 开启舞萌排行榜
@@ -1206,6 +1207,39 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
         result += f"\n该分段共 {len(rating_data)} 人"
     
     await query_rating_ranking.finish(result)
+
+
+# ==================== 定时任务 ====================
+
+# ==================== 超管命令 ====================
+
+clean_database = on_command(
+    "清理数据库",
+    permission=SUPERUSER,
+    priority=5,
+    block=True,
+)
+
+@clean_database.handle()
+async def _(bot: Bot, event: GroupMessageEvent):
+    """清理已退出群组的数据（仅超管可用）"""
+    await clean_database.send("正在清理已退出群组的数据，请稍候...")
+    
+    try:
+        # 获取当前机器人加入的所有群组
+        groups = await bot.get_group_list()
+        current_group_ids = [str(group["group_id"]) for group in groups]
+        
+        # 清理数据库中已退出的群组数据
+        cleaned_count = db.clean_left_groups(current_group_ids)
+        
+        if cleaned_count > 0:
+            await clean_database.finish(f"✅ 清理完成！共清理了 {cleaned_count} 个已退出群组的数据。")
+        else:
+            await clean_database.finish("✅ 数据库清理完成！没有发现已退出的群组。")
+    except Exception as e:
+        logger.error(f"清理数据库时出错: {e}")
+        await clean_database.finish("❌ 清理数据库时发生错误，请查看日志！")
 
 
 # ==================== 定时任务 ====================

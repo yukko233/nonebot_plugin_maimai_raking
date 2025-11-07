@@ -379,17 +379,82 @@ class Database:
         finally:
             conn.close()
     
-    def get_all_enabled_groups(self) -> List[str]:
-        """获取所有启用的群组"""
+    def get_all_groups(self) -> List[str]:
+        """获取数据库中所有群组"""
         conn = self._get_connection()
         cursor = conn.cursor()
         
         try:
-            cursor.execute("SELECT group_id FROM groups WHERE enabled = 1")
+            cursor.execute("SELECT group_id FROM groups")
             return [row["group_id"] for row in cursor.fetchall()]
         except Exception as e:
-            logger.error(f"获取启用的群组列表失败: {e}")
+            logger.error(f"获取所有群组列表失败: {e}")
             return []
+        finally:
+            conn.close()
+    
+    def clean_left_groups(self, current_groups: List[str]) -> int:
+        """清理已退出的群组数据
+        
+        Args:
+            current_groups: 当前机器人还在的群组列表
+            
+        Returns:
+            int: 清理的群组数量
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        cleaned_count = 0
+        
+        try:
+            # 获取数据库中所有群组
+            all_groups = self.get_all_groups()
+            
+            # 找出已退出的群组
+            left_groups = [group_id for group_id in all_groups if group_id not in current_groups]
+            
+            if not left_groups:
+                return 0
+            
+            # 收集所有需要删除成绩记录的用户QQ
+            users_to_clean_records = set()
+            
+            # 删除已退出群组的相关数据
+            for group_id in left_groups:
+                # 获取群组中的所有用户
+                group_users = self.get_group_users(group_id)
+                
+                # 添加到待清理记录的用户集合中
+                users_to_clean_records.update(group_users)
+                
+                # 删除群组中的用户关系
+                cursor.execute("DELETE FROM user_groups WHERE group_id = ?", (group_id,))
+                
+                # 删除群组记录
+                cursor.execute("DELETE FROM groups WHERE group_id = ?", (group_id,))
+                cleaned_count += 1
+                logger.info(f"已清理退出的群组数据: {group_id}")
+            
+            # 检查哪些用户仍然属于其他群组
+            remaining_users = set()
+            for group_id in current_groups:
+                group_users = self.get_group_users(group_id)
+                remaining_users.update(group_users)
+            
+            # 只删除那些不再属于任何群组的用户的成绩记录
+            users_to_delete_records = users_to_clean_records - remaining_users
+            for user_qq in users_to_delete_records:
+                cursor.execute("DELETE FROM records WHERE qq = ?", (user_qq,))
+                logger.info(f"已清理用户 {user_qq} 的成绩记录")
+            
+            conn.commit()
+            logger.info(f"共清理了 {cleaned_count} 个已退出群组的数据")
+            logger.info(f"共清理了 {len(users_to_delete_records)} 个用户的记录数据")
+            return cleaned_count
+        except Exception as e:
+            logger.error(f"清理已退出群组数据失败: {e}")
+            conn.rollback()
+            return 0
         finally:
             conn.close()
     
