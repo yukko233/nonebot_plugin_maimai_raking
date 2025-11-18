@@ -44,6 +44,8 @@ pip install nonebot-plugin-maimai-raking
 nb plugin install nonebot-plugin-maimai-raking
 ```
 
+目前只能直接clone项目然后项目文件夹部署nonebot环境使用
+
 ## ⚙️ 配置
 
 在 `.env` 文件中添加以下配置：
