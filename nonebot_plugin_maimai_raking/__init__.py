@@ -21,7 +21,7 @@ from nonebot_plugin_apscheduler import scheduler
 from .config import Config
 from .database import Database
 from .api import MaimaiAPI
-from .render import render_ranking_image
+from .render import render_ranking_image, clear_cover_memory_cache
 
 __plugin_meta__ = PluginMetadata(
     name="舞萌排行榜",
@@ -31,6 +31,7 @@ __plugin_meta__ = PluginMetadata(
     - 刷新排行榜
     - 重置刷新次数 <QQ号/@用户>
     - 更新歌曲数据
+    - 清理缓存
     - 清理数据库
     
     管理员命令：
@@ -343,6 +344,38 @@ async def _(bot: Bot, event: GroupMessageEvent):
     except Exception as e:
         logger.error(f"更新歌曲数据时出错: {e}")
         await update_music_data.send("❌ 更新歌曲数据失败，请稍后重试！")
+
+
+clear_cache_cmd = on_command(
+    "清理缓存",
+    permission=SUPERUSER,
+    priority=5,
+    block=True,
+)
+
+@clear_cache_cmd.handle()
+async def _(bot: Bot, event: GroupMessageEvent):
+    """清理所有歌曲封面缓存"""
+    await clear_cache_cmd.send("正在清理缓存，请稍候...")
+    
+    try:
+        # 清理数据库缓存
+        db_count = api.clear_cover_cache()
+        # 清理内存缓存
+        memory_count = clear_cover_memory_cache()
+        
+        total_count = db_count + memory_count
+        
+        await clear_cache_cmd.send(
+            f"✅ 缓存清理完成！\n"
+            f"数据库缓存：{db_count} 条\n"
+            f"内存缓存：{memory_count} 条\n"
+            f"总计：{total_count} 条"
+        )
+        
+    except Exception as e:
+        logger.error(f"清理缓存时出错: {e}")
+        await clear_cache_cmd.send("❌ 清理缓存失败，请稍后重试！")
 
 
 refresh_records = on_command("刷新成绩", priority=10, block=True)

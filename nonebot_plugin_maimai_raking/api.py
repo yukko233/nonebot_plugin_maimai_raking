@@ -546,6 +546,39 @@ class MaimaiAPI:
         
         return None
     
+    def _convert_song_id_to_cover_id(self, song_id: int) -> int:
+        """根据规则转换歌曲ID为封面ID
+        
+        Args:
+            song_id: 原始歌曲ID
+            
+        Returns:
+            转换后的封面ID
+        """
+        song_id_str = str(song_id)
+        
+        # 规则1: 6位数且以"100"开头（宴会场）
+        if len(song_id_str) == 6 and song_id_str.startswith("100"):
+            # 去掉前3位后去前导零
+            cover_id_str = song_id_str[3:].lstrip("0")
+            return int(cover_id_str) if cover_id_str else 0
+        
+        # 规则2: 5位数且以"10"开头（标转DX追加）
+        elif len(song_id_str) == 5 and song_id_str.startswith("10"):
+            # 去掉前2位后去前导零
+            cover_id_str = song_id_str[2:].lstrip("0")
+            return int(cover_id_str) if cover_id_str else 0
+        
+        # 规则3: 其他≥5位数
+        elif len(song_id_str) >= 5:
+            # 去掉第1位
+            cover_id_str = song_id_str[1:].lstrip("0")
+            return int(cover_id_str) if cover_id_str else 0
+        
+        # 规则4: ≤4位数，不处理
+        else:
+            return song_id
+    
     async def get_song_cover(self, song_id: int) -> Optional[bytes]:
         """获取歌曲封面（带数据库缓存）
         
@@ -556,10 +589,38 @@ class MaimaiAPI:
             封面图片字节数据，失败返回 None
         """
         try:
-            # 处理 ID 格式
-            cover_id = song_id
-            if 10000 < song_id <= 11000:
-                cover_id = song_id - 10000
+            # 宴会场特殊处理
+            if self.is_utage_chart(song_id):
+                # 尝试在 music_data 中查找匹配的常规曲
+                matched_cover_id = None
+                if self.music_data:
+                    # 获取宴谱歌曲信息
+                    song_info = None
+                    for song in self.music_data:
+                        if int(song.get("id")) == song_id:
+                            song_info = song
+                            break
+                    
+                    if song_info and "title" in song_info:
+                        # 标题去掉前3个字符后在常规曲中匹配
+                        title = song_info["title"]
+                        if len(title) > 3:
+                            search_title = title[3:].lower()
+                            for song in self.music_data:
+                                if not self.is_utage_chart(int(song.get("id"))):
+                                    if song.get("title", "").lower() == search_title:
+                                        # 找到匹配的常规曲
+                                        matched_cover_id = self._convert_song_id_to_cover_id(int(song.get("id")))
+                                        break
+                
+                # 找到匹配则用常规曲ID，否则对自己ID应用规则
+                if matched_cover_id is not None:
+                    cover_id = matched_cover_id
+                else:
+                    cover_id = self._convert_song_id_to_cover_id(song_id)
+            else:
+                # 非宴谱，直接应用规则
+                cover_id = self._convert_song_id_to_cover_id(song_id)
             
             # 补齐为 5 位数
             cover_id_str = f"{cover_id:05d}"
@@ -571,7 +632,7 @@ class MaimaiAPI:
             try:
                 cursor.execute(
                     "SELECT cover_data FROM cover_cache WHERE song_id = ?",
-                    (cover_id,)
+                    (song_id,)  # 缓存使用原始 song_id
                 )
                 row = cursor.fetchone()
                 
@@ -583,8 +644,9 @@ class MaimaiAPI:
             finally:
                 conn.close()
             
-            # 从网络获取
-            url = f"https://www.diving-fish.com/covers/{cover_id_str}.png"
+            # 从网络获取（使用新的资源链接）
+            base_url = "https://assets2.lxns.net/maimai"
+            url = f"{base_url}/jacket/{cover_id_str}.png"
             response = await self.client.get(url)
             
             if response.status_code == 200:
@@ -600,12 +662,12 @@ class MaimaiAPI:
                     
                     cursor.execute(
                         "INSERT OR REPLACE INTO cover_cache (song_id, cover_data, cached_at) VALUES (?, ?, ?)",
-                        (cover_id, cover_data, cached_at)
+                        (song_id, cover_data, cached_at)
                     )
                     
                     conn.commit()
                     conn.close()
-                    logger.debug(f"封面已缓存到数据库: song_id={cover_id}")
+                    logger.debug(f"封面已缓存到数据库: song_id={song_id}, cover_id={cover_id}")
                 except Exception as e:
                     logger.warning(f"保存封面缓存到数据库失败: {e}")
                 
@@ -617,6 +679,29 @@ class MaimaiAPI:
         except Exception as e:
             logger.error(f"获取歌曲 {song_id} 封面时出错: {e}")
             return None
+    
+    def clear_cover_cache(self) -> int:
+        """清除所有歌曲封面缓存
+        
+        Returns:
+            清除的缓存记录数量
+        """
+        try:
+            conn = self._get_cache_connection()
+            cursor = conn.cursor()
+            
+            # 删除所有封面缓存
+            cursor.execute("DELETE FROM cover_cache")
+            count = cursor.rowcount
+            
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"已清除 {count} 条封面缓存")
+            return count
+        except Exception as e:
+            logger.error(f"清除封面缓存失败: {e}")
+            return 0
     
     async def close(self):
         """关闭 HTTP 客户端"""

@@ -499,6 +499,15 @@ def clear_cache():
     logger.info("已清理所有渲染缓存")
 
 
+def clear_cover_memory_cache():
+    """清理封面内存缓存（保留图标和字体缓存）"""
+    global _cover_cache
+    count = len(_cover_cache)
+    _cover_cache.clear()
+    logger.info(f"已清理 {count} 条封面内存缓存")
+    return count
+
+
 def get_cache_stats() -> dict:
     """获取缓存统计信息"""
     return {
