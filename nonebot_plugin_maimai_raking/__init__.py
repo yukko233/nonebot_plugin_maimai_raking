@@ -84,7 +84,7 @@ async def get_group_nickname(bot: Bot, qq: str, group_id: str) -> str:
     return group_nickname_cache.get(cache_key, qq)
 
 async def update_group_nicknames(bot: Bot, group_id: str):
-    """更新指定群的所有排行榜用户昵称"""
+    """更新指定群的所有排行榜用户昵称，自动清理不存在的用户"""
     try:
         users = db.get_group_users(group_id)
         if not users:
@@ -92,6 +92,7 @@ async def update_group_nicknames(bot: Bot, group_id: str):
         
         logger.info(f"开始更新群 {group_id} 的 {len(users)} 个用户昵称")
         success_count = 0
+        removed_count = 0
         
         for qq in users:
             try:
@@ -107,18 +108,29 @@ async def update_group_nicknames(bot: Bot, group_id: str):
                 group_nickname_cache[cache_key] = nickname
                 success_count += 1
             except Exception as e:
-                logger.warning(f"更新群 {group_id} 中用户 {qq} 的昵称失败: {e}")
-                # 如果获取群成员信息失败，尝试获取QQ昵称作为备用
-                try:
-                    info = await bot.get_stranger_info(user_id=int(qq))
-                    nickname = info.get("nickname", qq)
+                # 检查错误是否是成员不存在
+                error_str = str(e)
+                if "成员不存在" in error_str or "retcode=1200" in error_str:
+                    logger.warning(f"用户 {qq} 在群 {group_id} 不存在，自动清理")
+                    db.remove_invalid_user_from_group(qq, group_id)
+                    # 同时清理缓存
                     cache_key = f"{group_id}_{qq}"
-                    group_nickname_cache[cache_key] = nickname
-                    success_count += 1
-                except Exception as e2:
-                    logger.warning(f"获取QQ {qq} 昵称也失败: {e2}")
+                    if cache_key in group_nickname_cache:
+                        del group_nickname_cache[cache_key]
+                    removed_count += 1
+                else:
+                    logger.warning(f"更新群 {group_id} 中用户 {qq} 的昵称失败: {e}")
+                    # 如果获取群成员信息失败，尝试获取QQ昵称作为备用
+                    try:
+                        info = await bot.get_stranger_info(user_id=int(qq))
+                        nickname = info.get("nickname", qq)
+                        cache_key = f"{group_id}_{qq}"
+                        group_nickname_cache[cache_key] = nickname
+                        success_count += 1
+                    except Exception as e2:
+                        logger.warning(f"获取QQ {qq} 昵称也失败: {e2}")
         
-        logger.info(f"群 {group_id} 昵称更新完成，成功: {success_count}/{len(users)}")
+        logger.info(f"群 {group_id} 昵称更新完成，成功: {success_count}/{len(users)}，清理: {removed_count}")
     except Exception as e:
         logger.error(f"更新群 {group_id} 昵称时发生未预期的错误: {e}")
         raise

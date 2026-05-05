@@ -407,6 +407,43 @@ class Database:
         finally:
             conn.close()
     
+    def remove_invalid_user_from_group(self, qq: str, group_id: str):
+        """从单个群移除不存在的用户，同时检查该用户是否还有其他群，如没有则清理成绩记录
+        
+        Args:
+            qq: 用户QQ号
+            group_id: 群组ID
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # 首先从该群移除用户
+            cursor.execute(
+                "DELETE FROM user_groups WHERE qq = ? AND group_id = ?",
+                (qq, group_id)
+            )
+            
+            # 检查该用户是否还属于其他群
+            cursor.execute("SELECT 1 FROM user_groups WHERE qq = ?", (qq,))
+            has_other_groups = cursor.fetchone() is not None
+            
+            # 如果没有其他群，清理成绩和用户记录
+            if not has_other_groups:
+                cursor.execute("DELETE FROM records WHERE qq = ?", (qq,))
+                cursor.execute("DELETE FROM refresh_logs WHERE qq = ?", (qq,))
+                cursor.execute("DELETE FROM users WHERE qq = ?", (qq,))
+                logger.info(f"用户 {qq} 已从所有群移除，清理成绩记录")
+            else:
+                logger.info(f"用户 {qq} 已从群组 {group_id} 移除，但仍属于其他群")
+            
+            conn.commit()
+        except Exception as e:
+            logger.error(f"从群组 {group_id} 移除无效用户 {qq} 失败: {e}")
+            conn.rollback()
+        finally:
+            conn.close()
+    
     def clean_left_groups(self, current_groups: List[str]) -> int:
         """清理已退出的群组数据
         
