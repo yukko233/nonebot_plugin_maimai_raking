@@ -622,8 +622,8 @@ class MaimaiAPI:
                 # 非宴谱，直接应用规则
                 cover_id = self._convert_song_id_to_cover_id(song_id)
             
-            # 补齐为 5 位数
-            cover_id_str = f"{cover_id:05d}"
+            # 直接使用 cover_id 的字符串形式（不补零）
+            cover_id_str = str(cover_id)
             
             # 检查数据库缓存
             conn = self._get_cache_connection()
