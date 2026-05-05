@@ -431,32 +431,27 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
         score_text = f"{achievements:.4f}%"
         draw.text((450, y_offset + row_height // 2), score_text, font=font_normal, fill=(50, 50, 70), anchor="mm")
         
-        # FC/FS 图标（新列）
+        # FC/FS 图标（始终两个位置，无图标时留白）
         icon_size = (35, 35)  # 正方形图标
         fc_fs_x = 620  # FC/FS 列的中心位置
         
-        # 计算需要显示的图标数量和起始位置
-        icon_count = 0
-        if fc:
-            icon_count += 1
-        if fs:
-            icon_count += 1
+        # 固定两个图标的总宽度
+        total_width = 2 * icon_size[0] + 5  # 两个图标 + 一个间隙
+        icon_x = fc_fs_x - total_width // 2
         
-        if icon_count > 0:
-            # 居中显示图标
-            total_width = icon_count * icon_size[0] + (icon_count - 1) * 5
-            icon_x = fc_fs_x - total_width // 2
-            
-            if fc:
-                fc_icon = _get_icon(fc, icon_size)
-                if fc_icon:
-                    img.paste(fc_icon, (icon_x, y_offset + row_height // 2 - icon_size[1] // 2), fc_icon)
-                    icon_x += icon_size[0] + 5
-            
-            if fs:
-                fs_icon = _get_icon(fs, icon_size)
-                if fs_icon:
-                    img.paste(fs_icon, (icon_x, y_offset + row_height // 2 - icon_size[1] // 2), fs_icon)
+        # 绘制 FC 图标（有则绘制，无则占位）
+        if fc:
+            fc_icon = _get_icon(fc, icon_size)
+            if fc_icon:
+                img.paste(fc_icon, (icon_x, y_offset + row_height // 2 - icon_size[1] // 2), fc_icon)
+        # 移动到下一个图标位置
+        icon_x += icon_size[0] + 5
+        
+        # 绘制 FS 图标（有则绘制，无则占位）
+        if fs:
+            fs_icon = _get_icon(fs, icon_size)
+            if fs_icon:
+                img.paste(fs_icon, (icon_x, y_offset + row_height // 2 - icon_size[1] // 2), fs_icon)
         
         # 评级图标
         rate = data.get("rate", "").lower()
