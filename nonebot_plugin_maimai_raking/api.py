@@ -647,6 +647,8 @@ class MaimaiAPI:
             # 从网络获取（使用新的资源链接）
             base_url = "https://assets2.lxns.net/maimai"
             url = f"{base_url}/jacket/{cover_id_str}.png"
+            
+            logger.debug(f"正在获取封面: song_id={song_id}, cover_id={cover_id}, URL={url}")
             response = await self.client.get(url)
             
             if response.status_code == 200:
@@ -673,7 +675,7 @@ class MaimaiAPI:
                 
                 return cover_data
             else:
-                logger.warning(f"获取歌曲 {song_id} 封面失败: HTTP {response.status_code}")
+                logger.warning(f"获取歌曲 {song_id} 封面失败: HTTP {response.status_code}, URL={url}")
                 return None
                 
         except Exception as e:
