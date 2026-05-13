@@ -513,3 +513,186 @@ def get_cache_stats() -> dict:
         "font_path_cache_info": _get_font_path.cache_info()
     }
 
+
+# ==================== 帮助图片渲染 ====================
+
+HELP_CACHE_DIR = Path(__file__).parent / "help_cache"
+HELP_CACHE_DIR.mkdir(exist_ok=True)
+
+HELP_USER_CACHE = HELP_CACHE_DIR / "help_user.png"
+HELP_ADMIN_CACHE = HELP_CACHE_DIR / "help_admin.png"
+
+# 颜色方案
+COLOR_PRIMARY = (108, 92, 231)      # 主色 - 紫色
+COLOR_SECONDARY = (72, 126, 176)    # 辅助色 - 蓝色
+COLOR_ACCENT = (255, 107, 107)      # 强调色 - 红色
+COLOR_BG = (248, 249, 252)          # 背景色
+COLOR_CARD_BG = (255, 255, 255)     # 卡片背景
+COLOR_TEXT_PRIMARY = (30, 30, 50)   # 主文字色
+COLOR_TEXT_SECONDARY = (100, 100, 130)  # 次要文字色
+COLOR_TEXT_LIGHT = (150, 150, 180)  # 浅色文字
+COLOR_BORDER = (230, 230, 240)      # 边框色
+COLOR_SECTION_BG = (245, 245, 255)  # 分区背景色
+
+# 帮助数据
+HELP_USER_COMMANDS = [
+    ("🎮 查询指令", [
+        ("wmrk <歌曲名> [难度]", "查询歌曲排行榜，可选难度（绿/黄/红/紫/白）"),
+        ("wmbm <歌曲名>", "查询歌曲详细信息（名称、ID、别名）"),
+        ("wmrt [分段]", "查看本群 Rating 排行榜，如 wmrt5 查15000分段"),
+    ]),
+    ("👤 个人管理", [
+        ("加入排行榜 [QQ号/@用户]", "加入本群排行榜（管理员可代操作）"),
+        ("退出排行榜 [QQ号/@用户]", "退出本群排行榜（管理员可代操作）"),
+        ("刷新成绩", "刷新自己的成绩数据（每日限2次）"),
+    ]),
+]
+
+HELP_ADMIN_COMMANDS = [
+    ("⚙️ 群管理指令", [
+        ("开启舞萌排行榜", "在本群开启排行榜功能"),
+        ("关闭舞萌排行榜", "在本群关闭排行榜功能"),
+        ("刷新群昵称 / 刷新昵称", "刷新本群所有用户的群名片昵称"),
+        ("开启wmrt / 关闭wmrt", "开启或关闭本群的 Rating 排行榜功能"),
+        ("wmbm+ <歌曲> <别名>", "为歌曲添加自定义别名"),
+        ("wmbm- <歌曲> <别名>", "移除歌曲的自定义别名"),
+    ]),
+]
+
+
+def _draw_rounded_rect(draw: ImageDraw, x: int, y: int, w: int, h: int, r: int, fill: tuple):
+    """绘制圆角矩形"""
+    draw.rounded_rectangle([(x, y), (x + w, y + h)], radius=r, fill=fill)
+
+
+def _draw_command_card(draw: ImageDraw, font_normal, font_small, x: int, y: int, cmd: str, desc: str, card_width: int):
+    """绘制单个命令卡片"""
+    card_height = 52
+    card_x = x + 20
+    card_y = y
+    card_w = card_width - 40
+
+    _draw_rounded_rect(draw, card_x, card_y, card_w, card_height, 8, COLOR_CARD_BG)
+
+    draw.text((card_x + 16, card_y + 10), cmd, font=font_normal, fill=COLOR_PRIMARY)
+    draw.text((card_x + 16, card_y + 30), desc, font=font_small, fill=COLOR_TEXT_SECONDARY)
+
+    return card_height + 6
+
+
+def _draw_section(draw: ImageDraw, font_title, font_normal, font_small, x: int, y: int, title: str, commands: list, card_width: int) -> int:
+    """绘制一个分区"""
+    section_padding = 16
+    section_x = x + 20
+    section_y = y
+    section_w = card_width - 40
+    section_h = 50 + len(commands) * 58
+
+    _draw_rounded_rect(draw, section_x, section_y, section_w, section_h, 12, COLOR_SECTION_BG)
+
+    draw.text((section_x + 20, section_y + 16), title, font=font_title, fill=COLOR_TEXT_PRIMARY)
+
+    cmd_y = section_y + 50
+    for cmd, desc in commands:
+        cmd_y += _draw_command_card(draw, font_normal, font_small, section_x, cmd_y, cmd, desc, section_w)
+
+    return section_h + 16
+
+
+def render_help_image(is_admin: bool = False) -> bytes:
+    """渲染帮助图片
+
+    Args:
+        is_admin: 是否为管理帮助
+
+    Returns:
+        图片字节数据
+    """
+    font_path = _get_font_path()
+    if not font_path:
+        logger.error("未找到可用字体，无法渲染帮助图片")
+        return None
+
+    font_title = _get_font(22)
+    font_normal = _get_font(16)
+    font_small = _get_font(13)
+    font_header = _get_font(28)
+
+    card_width = 520
+    padding = 30
+
+    commands = HELP_ADMIN_COMMANDS if is_admin else HELP_USER_COMMANDS
+
+    content_height = sum(60 + len(section[1]) * 58 for section in commands)
+    header_height = 80
+    footer_height = 50
+    total_height = header_height + content_height + footer_height + padding * 2
+
+    img = Image.new("RGB", (card_width, total_height), COLOR_BG)
+    draw = ImageDraw.Draw(img)
+
+    # 绘制头部
+    header_y = padding
+    _draw_rounded_rect(draw, 20, header_y, card_width - 40, 60, 12, COLOR_PRIMARY)
+    title_text = "📖 舞萌排行榜 - 管理帮助" if is_admin else "📖 舞萌排行榜 - 使用帮助"
+    draw.text((card_width // 2, header_y + 30), title_text, font=font_header, fill=(255, 255, 255), anchor="mm")
+
+    # 绘制各分区
+    section_y = header_y + 80
+    for title, cmds in commands:
+        section_y += _draw_section(draw, font_title, font_normal, font_small, 0, section_y, title, cmds, card_width)
+
+    # 绘制页脚
+    footer_y = total_height - footer_height
+    draw.line([(40, footer_y + 10), (card_width - 40, footer_y + 10)], fill=COLOR_BORDER, width=1)
+    draw.text(
+        (card_width // 2, footer_y + 32),
+        "发送 wmrk管理帮助 查看管理指令" if not is_admin else "发送 wmrk帮助 查看普通指令",
+        font=font_small,
+        fill=COLOR_TEXT_LIGHT,
+        anchor="mm"
+    )
+
+    bio = BytesIO()
+    img.save(bio, format="PNG", optimize=True, compress_level=6)
+    return bio.getvalue()
+
+
+def get_help_image(is_admin: bool = False) -> Optional[bytes]:
+    """获取帮助图片（优先从缓存读取）
+
+    Args:
+        is_admin: 是否为管理帮助
+
+    Returns:
+        图片字节数据，失败返回 None
+    """
+    cache_path = HELP_ADMIN_CACHE if is_admin else HELP_USER_CACHE
+    if cache_path.exists():
+        try:
+            with open(cache_path, "rb") as f:
+                return f.read()
+        except Exception as e:
+            logger.warning(f"读取帮助图片缓存失败: {e}")
+    return None
+
+
+async def pre_render_help_images():
+    """预渲染帮助图片并缓存到本地"""
+    logger.info("开始预渲染帮助图片...")
+
+    for is_admin in [False, True]:
+        try:
+            img_data = render_help_image(is_admin=is_admin)
+            if img_data:
+                cache_path = HELP_ADMIN_CACHE if is_admin else HELP_USER_CACHE
+                with open(cache_path, "wb") as f:
+                    f.write(img_data)
+                logger.info(f"帮助图片已缓存: {cache_path}")
+            else:
+                logger.error(f"渲染帮助图片失败: {'管理' if is_admin else '用户'}")
+        except Exception as e:
+            logger.error(f"预渲染帮助图片时出错: {e}")
+
+    logger.info("帮助图片预渲染完成")
+

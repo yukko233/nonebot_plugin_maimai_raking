@@ -21,7 +21,7 @@ from nonebot_plugin_apscheduler import scheduler
 from .config import Config
 from .database import Database
 from .api import MaimaiAPI
-from .render import render_ranking_image, clear_cover_memory_cache
+from .render import render_ranking_image, clear_cover_memory_cache, get_help_image, pre_render_help_images
 
 __plugin_meta__ = PluginMetadata(
     name="舞萌排行榜",
@@ -50,6 +50,8 @@ __plugin_meta__ = PluginMetadata(
     - wmbm <歌曲名/别名/ID>
     - wmrt [分段] - 查看本群 Rating 排行榜
       例如：wmrt 查询全部，wmrt5 查询15000分段
+    - wmrk帮助 - 查看使用帮助
+    - wmrk管理帮助 - 查看管理帮助
     """,
     type="application",
     homepage="https://github.com/yourusername/nonebot-plugin-maimai-raking",
@@ -1304,11 +1306,37 @@ async def _(bot: Bot, event: GroupMessageEvent):
         return
 
 
+# ==================== 帮助命令 ====================
+
+help_cmd = on_command("wmrk帮助", priority=8, block=True)
+help_admin_cmd = on_command("wmrk管理帮助", priority=8, block=True)
+
+
+@help_cmd.handle()
+async def _(bot: Bot, event: GroupMessageEvent):
+    """显示普通用户帮助"""
+    img_data = get_help_image(is_admin=False)
+    if img_data:
+        await help_cmd.finish(MessageSegment.image(img_data))
+    else:
+        await help_cmd.finish("❌ 帮助图片未生成，请联系管理员")
+
+
+@help_admin_cmd.handle()
+async def _(bot: Bot, event: GroupMessageEvent):
+    """显示管理帮助"""
+    img_data = get_help_image(is_admin=True)
+    if img_data:
+        await help_admin_cmd.finish(MessageSegment.image(img_data))
+    else:
+        await help_admin_cmd.finish("❌ 帮助图片未生成，请联系管理员")
+
+
 # ==================== 定时任务 ====================
 
-@scheduler.scheduled_job("cron", hour=0, minute=0, id="maimai_auto_update_records")
+@scheduler.scheduled_job("cron", hour=0, minute=15, id="maimai_auto_update_records")
 async def auto_update_records():
-    """每天0点自动更新所有用户的成绩"""
+    """每天0点15分自动更新所有用户的成绩"""
     logger.info("开始自动更新舞萌排行榜数据...")
     
     all_users = db.get_all_users()
@@ -1385,6 +1413,20 @@ async def auto_update_nicknames():
         logger.error(f"自动更新群昵称时出错: {e}")
 
 
+@scheduler.scheduled_job("cron", hour=0, minute=0, id="maimai_auto_update_music_data")
+async def auto_update_music_data():
+    """每天0点自动更新歌曲数据"""
+    logger.info("开始自动更新歌曲数据...")
+    
+    try:
+        await api.load_music_data()
+        if api.music_data:
+            song_count = len(api.music_data)
+            logger.info(f"歌曲数据自动更新完成！共加载 {song_count} 首歌曲")
+        else:
+            logger.warning("歌曲数据自动更新失败，未加载到任何歌曲数据！")
+    except Exception as e:
+        logger.error(f"自动更新歌曲数据时出错: {e}")
 
 
 # ==================== 启动和关闭事件 ====================
@@ -1398,6 +1440,9 @@ async def _():
     await api.load_alias_data()
     refresh_custom_alias_cache()
     logger.info("歌曲数据和别名数据加载完成")
+    
+    # 预渲染帮助图片
+    await pre_render_help_images()
 
 
 @driver.on_bot_connect
