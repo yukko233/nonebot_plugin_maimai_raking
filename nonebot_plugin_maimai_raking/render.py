@@ -536,12 +536,12 @@ COLOR_SECTION_BG = (245, 245, 255)  # 分区背景色
 
 # 帮助数据
 HELP_USER_COMMANDS = [
-    ("🎮 查询指令", [
+    ("查询指令", [
         ("wmrk <歌曲名> [难度]", "查询歌曲排行榜，可选难度（绿/黄/红/紫/白）"),
         ("wmbm <歌曲名>", "查询歌曲详细信息（名称、ID、别名）"),
         ("wmrt [分段]", "查看本群 Rating 排行榜，如 wmrt5 查15000分段"),
     ]),
-    ("👤 个人管理", [
+    ("个人管理", [
         ("加入排行榜 [QQ号/@用户]", "加入本群排行榜（管理员可代操作）"),
         ("退出排行榜 [QQ号/@用户]", "退出本群排行榜（管理员可代操作）"),
         ("刷新成绩", "刷新自己的成绩数据（每日限2次）"),
@@ -549,7 +549,7 @@ HELP_USER_COMMANDS = [
 ]
 
 HELP_ADMIN_COMMANDS = [
-    ("⚙️ 群管理指令", [
+    ("群管理指令", [
         ("开启舞萌排行榜", "在本群开启排行榜功能"),
         ("关闭舞萌排行榜", "在本群关闭排行榜功能"),
         ("刷新群昵称 / 刷新昵称", "刷新本群所有用户的群名片昵称"),
@@ -634,7 +634,7 @@ def render_help_image(is_admin: bool = False) -> bytes:
     # 绘制头部
     header_y = padding
     _draw_rounded_rect(draw, 20, header_y, card_width - 40, 60, 12, COLOR_PRIMARY)
-    title_text = "📖 舞萌排行榜 - 管理帮助" if is_admin else "📖 舞萌排行榜 - 使用帮助"
+    title_text = "舞萌排行榜 - 管理帮助" if is_admin else "舞萌排行榜 - 使用帮助"
     draw.text((card_width // 2, header_y + 30), title_text, font=font_header, fill=(255, 255, 255), anchor="mm")
 
     # 绘制各分区
@@ -645,13 +645,6 @@ def render_help_image(is_admin: bool = False) -> bytes:
     # 绘制页脚
     footer_y = total_height - footer_height
     draw.line([(40, footer_y + 10), (card_width - 40, footer_y + 10)], fill=COLOR_BORDER, width=1)
-    draw.text(
-        (card_width // 2, footer_y + 32),
-        "发送 wmrk管理帮助 查看管理指令" if not is_admin else "发送 wmrk帮助 查看普通指令",
-        font=font_small,
-        fill=COLOR_TEXT_LIGHT,
-        anchor="mm"
-    )
 
     bio = BytesIO()
     img.save(bio, format="PNG", optimize=True, compress_level=6)
