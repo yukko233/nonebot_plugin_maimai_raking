@@ -375,7 +375,7 @@ Bot: ✅ 已成功为用户 123456789 加入群 987654321 的排行榜！
 
 - 感谢 [水鱼查分器](https://www.diving-fish.com/maimaidx/prober/) 提供的成绩 API 支持
 - 感谢 [落雪咖啡屋](https://maimai.lxns.net/) 提供的 舞萌美术资源
-- 感谢 [柚子舞萌别名库](https://www.yuzuchan.moe/mai/alias) 提供的别名数据
+- 感谢 [柚子舞萌别名库](https://www.yuzuchan.moe/api/maimaidx/maimaidxalias) 提供的别名数据
 - 感谢 NoneBot2 社区的支持
 
 ---
