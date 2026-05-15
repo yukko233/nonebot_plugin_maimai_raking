@@ -1,6 +1,6 @@
 [project]
 name = "nonebot-plugin-maimai-raking"
-version = "0.1.0"
+version = "0.1.1"
 description = "一个基于 NoneBot2 的舞萌 DX 分群排行榜插件"
 authors = [
     {name = "yukko"},
@@ -21,7 +21,6 @@ license = {text = "GPL-3.0"}
 keywords = ["nonebot", "nonebot2", "nonebot-plugin", "maimai", "maimaidx", "舞萌"]
 classifiers = [
     "Development Status :: 4 - Beta",
-    "Framework :: NoneBot",
     "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Natural Language :: Chinese (Simplified)",
     "Operating System :: OS Independent",
@@ -38,6 +37,10 @@ classifiers = [
 Homepage = "https://github.com/yukko233/nonebot_plugin_maimai_raking"
 Repository = "https://github.com/yukko233/nonebot_plugin_maimai_raking"
 Issues = "https://github.com/yukko233/nonebot_plugin_maimai_raking/issues"
+
+[project.entry-points."nonebot.plugin"]
+nonebot-plugin-maimai-raking = "nonebot_plugin_maimai_raking"
+nonebot_plugin_maimai_raking = "nonebot_plugin_maimai_raking"
 
 [build-system]
 requires = ["hatchling"]
