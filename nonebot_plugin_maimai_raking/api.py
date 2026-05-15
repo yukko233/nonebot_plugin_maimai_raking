@@ -10,11 +10,12 @@ from nonebot.log import logger
 class MaimaiAPI:
     """舞萌 API 客户端"""
     
-    def __init__(self, developer_token: str):
+    def __init__(self, developer_token: str, cache_path: Path):
         """初始化 API 客户端
         
         Args:
             developer_token: 水鱼查分器 Developer Token
+            cache_path: 缓存存储路径
         """
         self.developer_token = developer_token
         self.base_url = "https://www.diving-fish.com/api/maimaidxprober"
@@ -25,7 +26,7 @@ class MaimaiAPI:
         self.alias_data: List[dict] = []
         
         # 本地缓存数据库路径
-        self.cache_dir = Path("data/maimai_cache")
+        self.cache_dir = Path(cache_path)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.cache_db_file = self.cache_dir / "cache.db"
         

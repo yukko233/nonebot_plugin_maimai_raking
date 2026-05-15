@@ -26,7 +26,7 @@
 - 默认显示最高难度的排行榜
 
 
-## 📦 安装（还没传pypi和nonebot，所以不能使用以下方式安装）
+## 📦 安装
 
 使用 pip 安装：
 
@@ -40,8 +40,6 @@ pip install nonebot-plugin-maimai-raking
 nb plugin install nonebot-plugin-maimai-raking
 ```
 
-目前只能直接clone项目然后项目文件夹部署nonebot环境使用
-
 ## ⚙️ 配置
 
 在 `.env` 文件中添加以下配置：
@@ -50,8 +48,11 @@ nb plugin install nonebot-plugin-maimai-raking
 # 水鱼查分器 Developer Token（必填）
 MAIMAI_DEVELOPER_TOKEN=your_developer_token_here
 
-# 数据存储路径（可选，默认为 data/maimai_raking）
+# 数据存储路径（可选，默认使用 nonebot-plugin-localstore 管理的插件数据目录）
 MAIMAI_DATA_PATH=data/maimai_raking
+
+# 缓存存储路径（可选，默认使用 nonebot-plugin-localstore 管理的插件缓存目录）
+MAIMAI_CACHE_PATH=data/maimai_cache
 ```
 
 ### 获取 Developer Token
@@ -333,22 +334,20 @@ Bot: ✅ 已成功为用户 123456789 加入群 987654321 的排行榜！
 
 ## 💾 数据存储
 
-插件使用 **SQLite 数据库**存储数据，数据表含：
+插件数据使用 [nonebot-plugin-localstore](https://github.com/nonebot/plugin-localstore) 管理，默认存储在插件专属的数据与缓存目录中。也可通过配置项自定义路径。
 
 ### 主数据库
-- 📂 `data/maimai_raking/`
-  - 📄 `maimai_raking.db` - 主数据库文件
-    - `groups` 表 - 群组配置信息
-    - `users` 表 - 用户基本信息
-    - `user_groups` 表 - 用户-群组关系
-    - `records` 表 - 用户成绩记录
-    - `custom_aliases` 表 - 自定义歌曲别名
+- 📄 `maimai_raking.db` - 主数据库文件
+  - `groups` 表 - 群组配置信息
+  - `users` 表 - 用户基本信息
+  - `user_groups` 表 - 用户-群组关系
+  - `records` 表 - 用户成绩记录
+  - `custom_aliases` 表 - 自定义歌曲别名
 
 ### 缓存数据库
-- 📂 `data/maimai_cache/`
-  - 📄 `cache.db` - 缓存数据库文件
-    - `alias_cache` 表 - 别名数据缓存
-    - `cover_cache` 表 - 歌曲封面缓存（BLOB）
+- 📄 `cache.db` - 缓存数据库文件
+  - `alias_cache` 表 - 别名数据缓存
+  - `cover_cache` 表 - 歌曲封面缓存（BLOB）
 
 ## 📄 开源协议
 

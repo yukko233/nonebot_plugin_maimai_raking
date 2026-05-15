@@ -18,6 +18,8 @@ from datetime import datetime
 require("nonebot_plugin_apscheduler")
 from nonebot_plugin_apscheduler import scheduler
 
+require("nonebot_plugin_localstore")
+
 from .config import Config
 from .database import Database
 from .api import MaimaiAPI
@@ -54,7 +56,7 @@ __plugin_meta__ = PluginMetadata(
     - wmrk管理帮助 - 查看管理帮助
     """,
     type="application",
-    homepage="https://github.com/yourusername/nonebot-plugin-maimai-raking",
+    homepage="https://github.com/yukko233/nonebot_plugin_maimai_raking",
     config=Config,
     supported_adapters={"~onebot.v11"},
 )
@@ -65,7 +67,7 @@ config = get_plugin_config(Config)
 
 # 初始化数据库和 API
 db = Database(config.maimai_data_path)
-api = MaimaiAPI(config.maimai_developer_token)
+api = MaimaiAPI(config.maimai_developer_token, config.maimai_cache_path)
 
 # 群昵称缓存
 group_nickname_cache: dict = {}
