@@ -2,6 +2,7 @@
 from io import BytesIO
 from typing import List, Dict, Any, Optional
 from PIL import Image, ImageDraw, ImageFont
+from pilmoji import Pilmoji
 import os
 from pathlib import Path
 from nonebot.log import logger
@@ -171,6 +172,7 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     # 创建图片
     img = Image.new("RGB", (width, height), color=(250, 250, 252))
     draw = ImageDraw.Draw(img)
+    pilmoji = Pilmoji(img)
     
     # 使用缓存的字体
     font_title = _get_font(32)
@@ -220,12 +222,12 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     title_y = info_y + 15
     
     # 深色文字，无阴影
-    draw.text((title_x, title_y), song_title, font=font_title, fill=(40, 40, 40), anchor="lm")
+    pilmoji.text((title_x, title_y), song_title, font=font_title, fill=(40, 40, 40), anchor="lm")
     
     # 绘制歌曲ID（在标题下方）
     song_id = song.get("id", "未知")
     id_y = title_y + 40
-    draw.text((title_x, id_y), f"ID: {song_id}", font=font_small, fill=(120, 120, 140), anchor="lm")
+    pilmoji.text((title_x, id_y), f"ID: {song_id}", font=font_small, fill=(120, 120, 140), anchor="lm")
     
     # 绘制类型标签和版本标签（参考图片风格）
     tags_row1_y = title_y + 70  # 增加间距以容纳ID
@@ -245,7 +247,7 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
         [(tag_x, tags_row1_y), (tag_x + type_width, tags_row1_y + tag_height)],
         radius=8, fill=type_bg
     )
-    draw.text((tag_x + type_width // 2, tags_row1_y + tag_height // 2), type_text,
+    pilmoji.text((tag_x + type_width // 2, tags_row1_y + tag_height // 2), type_text,
               font=font_small, fill=type_text_color, anchor="mm")
     
     # 版本标签（如"DX2025"）- 简化处理，暂时不显示具体版本
@@ -319,7 +321,7 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
             
             # 绘制定数数值（大字）
             ds_text = f"{ds_val:.1f}"
-            draw.text((box_x + ds_box_size // 2, tags_row2_y + ds_box_size // 2),
+            pilmoji.text((box_x + ds_box_size // 2, tags_row2_y + ds_box_size // 2),
                      ds_text, font=font_normal, fill=text_color, anchor="mm")
     
     # 绘制表头背景
@@ -328,11 +330,11 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     
     # 绘制表头文字（移除了难度列）
     header_y = y_offset + table_header_height // 2
-    draw.text((70, header_y), "排名", font=font_normal, fill=(80, 80, 100), anchor="mm")
-    draw.text((200, header_y), "玩家", font=font_normal, fill=(80, 80, 100), anchor="mm")
-    draw.text((450, header_y), "成绩", font=font_normal, fill=(80, 80, 100), anchor="mm")
-    draw.text((620, header_y), "FC/FS", font=font_normal, fill=(80, 80, 100), anchor="mm")
-    draw.text((750, header_y), "评级", font=font_normal, fill=(80, 80, 100), anchor="mm")
+    pilmoji.text((70, header_y), "排名", font=font_normal, fill=(80, 80, 100), anchor="mm")
+    pilmoji.text((200, header_y), "玩家", font=font_normal, fill=(80, 80, 100), anchor="mm")
+    pilmoji.text((450, header_y), "成绩", font=font_normal, fill=(80, 80, 100), anchor="mm")
+    pilmoji.text((620, header_y), "FC/FS", font=font_normal, fill=(80, 80, 100), anchor="mm")
+    pilmoji.text((750, header_y), "评级", font=font_normal, fill=(80, 80, 100), anchor="mm")
     
     y_offset += table_header_height
     
@@ -362,16 +364,16 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
         
         if rank == 1:
             # 金色第一名
-            draw.text((rank_x, rank_y), "1st", font=font_normal, fill=(255, 215, 0), anchor="mm")
+            pilmoji.text((rank_x, rank_y), "1st", font=font_normal, fill=(255, 215, 0), anchor="mm")
         elif rank == 2:
             # 银色第二名
-            draw.text((rank_x, rank_y), "2nd", font=font_normal, fill=(192, 192, 192), anchor="mm")
+            pilmoji.text((rank_x, rank_y), "2nd", font=font_normal, fill=(192, 192, 192), anchor="mm")
         elif rank == 3:
             # 铜色第三名
-            draw.text((rank_x, rank_y), "3rd", font=font_normal, fill=(205, 127, 50), anchor="mm")
+            pilmoji.text((rank_x, rank_y), "3rd", font=font_normal, fill=(205, 127, 50), anchor="mm")
         else:
             # 普通排名
-            draw.text((rank_x, rank_y), str(rank), font=font_normal, fill=(100, 100, 120), anchor="mm")
+            pilmoji.text((rank_x, rank_y), str(rank), font=font_normal, fill=(100, 100, 120), anchor="mm")
         
         # 玩家昵称（根据长度调整字体和换行）
         nickname = data.get("nickname", "未知")
@@ -411,16 +413,16 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
                 line2 = ""
             
             # 绘制第一行
-            draw.text((nickname_x, nickname_y - 8), line1, font=font_tiny, fill=(50, 50, 70), anchor="mm")
+            pilmoji.text((nickname_x, nickname_y - 8), line1, font=font_tiny, fill=(50, 50, 70), anchor="mm")
             # 绘制第二行（如果存在）
             if line2:
                 # 如果第二行仍然超过8个字符，添加省略号
                 if len(line2) > 8:
                     line2 = line2[:8] + "..."
-                draw.text((nickname_x, nickname_y + 8), line2, font=font_tiny, fill=(50, 50, 70), anchor="mm")
+                pilmoji.text((nickname_x, nickname_y + 8), line2, font=font_tiny, fill=(50, 50, 70), anchor="mm")
         else:
             # 短名字：使用正常字体
-            draw.text((nickname_x, nickname_y), nickname, font=font_normal, fill=(50, 50, 70), anchor="mm")
+            pilmoji.text((nickname_x, nickname_y), nickname, font=font_normal, fill=(50, 50, 70), anchor="mm")
         
         # 成绩
         achievements = data.get("achievements", 0)
@@ -429,7 +431,7 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
         
         # 成绩文本（加粗显示）
         score_text = f"{achievements:.4f}%"
-        draw.text((450, y_offset + row_height // 2), score_text, font=font_normal, fill=(50, 50, 70), anchor="mm")
+        pilmoji.text((450, y_offset + row_height // 2), score_text, font=font_normal, fill=(50, 50, 70), anchor="mm")
         
         # FC/FS 图标（始终两个位置，无图标时留白）
         icon_size = (35, 35)  # 正方形图标
@@ -468,7 +470,7 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     footer_y = height - footer_height
     draw.line([(50, footer_y + 15), (width - 50, footer_y + 15)], fill=(200, 200, 220), width=1)
     
-    draw.text(
+    pilmoji.text(
         (width // 2, footer_y + 40),
         "舞萌排行榜 | Geneted by @MaiMaiRankingBot",
         font=font_small,
@@ -565,7 +567,7 @@ def _draw_rounded_rect(draw: ImageDraw, x: int, y: int, w: int, h: int, r: int, 
     draw.rounded_rectangle([(x, y), (x + w, y + h)], radius=r, fill=fill)
 
 
-def _draw_command_card(draw: ImageDraw, font_normal, font_small, x: int, y: int, cmd: str, desc: str, card_width: int):
+def _draw_command_card(draw: ImageDraw, pilmoji: Pilmoji, font_normal, font_small, x: int, y: int, cmd: str, desc: str, card_width: int):
     """绘制单个命令卡片"""
     card_height = 52
     card_x = x + 20
@@ -574,13 +576,13 @@ def _draw_command_card(draw: ImageDraw, font_normal, font_small, x: int, y: int,
 
     _draw_rounded_rect(draw, card_x, card_y, card_w, card_height, 8, COLOR_CARD_BG)
 
-    draw.text((card_x + 16, card_y + 10), cmd, font=font_normal, fill=COLOR_PRIMARY)
-    draw.text((card_x + 16, card_y + 30), desc, font=font_small, fill=COLOR_TEXT_SECONDARY)
+    pilmoji.text((card_x + 16, card_y + 10), cmd, font=font_normal, fill=COLOR_PRIMARY)
+    pilmoji.text((card_x + 16, card_y + 30), desc, font=font_small, fill=COLOR_TEXT_SECONDARY)
 
     return card_height + 6
 
 
-def _draw_section(draw: ImageDraw, font_title, font_normal, font_small, x: int, y: int, title: str, commands: list, card_width: int) -> int:
+def _draw_section(draw: ImageDraw, pilmoji: Pilmoji, font_title, font_normal, font_small, x: int, y: int, title: str, commands: list, card_width: int) -> int:
     """绘制一个分区"""
     section_padding = 16
     section_x = x + 20
@@ -590,11 +592,11 @@ def _draw_section(draw: ImageDraw, font_title, font_normal, font_small, x: int, 
 
     _draw_rounded_rect(draw, section_x, section_y, section_w, section_h, 12, COLOR_SECTION_BG)
 
-    draw.text((section_x + 20, section_y + 16), title, font=font_title, fill=COLOR_TEXT_PRIMARY)
+    pilmoji.text((section_x + 20, section_y + 16), title, font=font_title, fill=COLOR_TEXT_PRIMARY)
 
     cmd_y = section_y + 50
     for cmd, desc in commands:
-        cmd_y += _draw_command_card(draw, font_normal, font_small, section_x, cmd_y, cmd, desc, section_w)
+        cmd_y += _draw_command_card(draw, pilmoji, font_normal, font_small, section_x, cmd_y, cmd, desc, section_w)
 
     return section_h + 16
 
@@ -630,17 +632,18 @@ def render_help_image(is_admin: bool = False) -> bytes:
 
     img = Image.new("RGB", (card_width, total_height), COLOR_BG)
     draw = ImageDraw.Draw(img)
+    pilmoji = Pilmoji(img)
 
     # 绘制头部
     header_y = padding
     _draw_rounded_rect(draw, 20, header_y, card_width - 40, 60, 12, COLOR_PRIMARY)
     title_text = "舞萌排行榜 - 管理帮助" if is_admin else "舞萌排行榜 - 使用帮助"
-    draw.text((card_width // 2, header_y + 30), title_text, font=font_header, fill=(255, 255, 255), anchor="mm")
+    pilmoji.text((card_width // 2, header_y + 30), title_text, font=font_header, fill=(255, 255, 255), anchor="mm")
 
     # 绘制各分区
     section_y = header_y + 80
     for title, cmds in commands:
-        section_y += _draw_section(draw, font_title, font_normal, font_small, 0, section_y, title, cmds, card_width)
+        section_y += _draw_section(draw, pilmoji, font_title, font_normal, font_small, 0, section_y, title, cmds, card_width)
 
     # 绘制页脚
     footer_y = total_height - footer_height
