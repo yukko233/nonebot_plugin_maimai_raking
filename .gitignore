@@ -39,6 +39,7 @@ env/
 # 项目数据
 data/
 *.log
+.reasonix/
 
 # API 文档（开发用）
 diving-fish-api.md

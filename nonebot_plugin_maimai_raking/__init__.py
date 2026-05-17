@@ -66,16 +66,16 @@ driver = get_driver()
 config = get_plugin_config(Config)
 
 # 初始化数据库和 API
-db = Database(config.maimai_data_path)
-api = MaimaiAPI(config.maimai_developer_token, config.maimai_cache_path)
+db = Database()
+api = MaimaiAPI(config.maimai_developer_token)
 
 # 群昵称缓存
 group_nickname_cache: dict = {}
 
 
-def refresh_custom_alias_cache():
+async def refresh_custom_alias_cache():
     """同步数据库中的自定义别名至 API 缓存"""
-    custom_aliases = db.get_all_custom_aliases()
+    custom_aliases = await db.get_all_custom_aliases()
     api.set_custom_aliases(custom_aliases)
 
 
@@ -90,7 +90,7 @@ async def get_group_nickname(bot: Bot, qq: str, group_id: str) -> str:
 async def update_group_nicknames(bot: Bot, group_id: str):
     """更新指定群的所有排行榜用户昵称，自动清理不存在的用户"""
     try:
-        users = db.get_group_users(group_id)
+        users = await db.get_group_users(group_id)
         if not users:
             return
         
@@ -116,7 +116,7 @@ async def update_group_nicknames(bot: Bot, group_id: str):
                 error_str = str(e)
                 if "成员不存在" in error_str or "retcode=1200" in error_str:
                     logger.warning(f"用户 {qq} 在群 {group_id} 不存在，自动清理")
-                    db.remove_invalid_user_from_group(qq, group_id)
+                    await db.remove_invalid_user_from_group(qq, group_id)
                     # 同时清理缓存
                     cache_key = f"{group_id}_{qq}"
                     if cache_key in group_nickname_cache:
@@ -152,7 +152,7 @@ enable_ranking = on_command(
 async def _(event: GroupMessageEvent):
     """开启舞萌排行榜功能"""
     group_id = str(event.group_id)
-    db.enable_group(group_id)
+    await db.enable_group(group_id)
     await enable_ranking.finish("✅ 已在本群开启舞萌排行榜功能！")
 
 
@@ -167,7 +167,7 @@ disable_ranking = on_command(
 async def _(event: GroupMessageEvent):
     """关闭舞萌排行榜功能"""
     group_id = str(event.group_id)
-    db.disable_group(group_id)
+    await db.disable_group(group_id)
     await disable_ranking.finish("❌ 已在本群关闭舞萌排行榜功能！")
 
 
@@ -183,12 +183,12 @@ async def _(bot: Bot, event: GroupMessageEvent):
     """手动刷新排行榜"""
     group_id = str(event.group_id)
     
-    if not db.is_group_enabled(group_id):
+    if not await db.is_group_enabled(group_id):
         return
     
     await refresh_ranking.send("正在刷新排行榜数据，请稍候...")
     
-    users = db.get_group_users(group_id)
+    users = await db.get_group_users(group_id)
     if not users:
         await refresh_ranking.finish("本群暂无用户加入排行榜！")
         return
@@ -200,7 +200,7 @@ async def _(bot: Bot, event: GroupMessageEvent):
         try:
             records = await api.get_player_records(qq)
             if records:
-                db.update_user_records(qq, records)
+                await db.update_user_records(qq, records)
                 success_count += 1
             else:
                 fail_count += 1
@@ -208,7 +208,6 @@ async def _(bot: Bot, event: GroupMessageEvent):
         except Exception as e:
             fail_count += 1
             logger.error(f"获取用户 {qq} 的成绩时出错: {e}")
-    
     msg = f"刷新完成！\n成功: {success_count} 人\n失败: {fail_count} 人"
     await refresh_ranking.finish(msg)
 
@@ -246,10 +245,10 @@ async def _(bot: Bot, event: GroupMessageEvent):
     """手动刷新群昵称"""
     group_id = str(event.group_id)
     
-    if not db.is_group_enabled(group_id):
+    if not await db.is_group_enabled(group_id):
         return
     
-    users = db.get_group_users(group_id)
+    users = await db.get_group_users(group_id)
     if not users:
         await refresh_nicknames.finish("本群暂无用户加入排行榜！")
         return
@@ -271,10 +270,10 @@ async def _(bot: Bot, event: GroupMessageEvent):
     """手动刷新群昵称"""
     group_id = str(event.group_id)
     
-    if not db.is_group_enabled(group_id):
+    if not await db.is_group_enabled(group_id):
         return
     
-    users = db.get_group_users(group_id)
+    users = await db.get_group_users(group_id)
     if not users:
         await refresh_nickname.finish("本群暂无用户加入排行榜！")
         return
@@ -297,7 +296,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     group_id = str(event.group_id)
     user_id = str(event.user_id)
     
-    if not db.is_group_enabled(group_id):
+    if not await db.is_group_enabled(group_id):
         return
     
     # 解析参数：支持QQ号或@用户
@@ -323,14 +322,14 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
         return
     
     # 检查用户是否在排行榜中
-    if not db.is_user_in_group(qq, group_id):
+    if not await db.is_user_in_group(qq, group_id):
         await reset_refresh_count.finish(f"用户 {qq} 未加入本群排行榜！")
         return
     
     try:
         # 重置今日刷新次数
         today = datetime.now().strftime("%Y-%m-%d")
-        db.reset_daily_refresh_count(qq, today)
+        await db.reset_daily_refresh_count(qq, today)
         
         await reset_refresh_count.finish(f"✅ 已重置用户 {qq} 的今日刷新次数！")
         
@@ -376,7 +375,7 @@ async def _(bot: Bot, event: GroupMessageEvent):
     
     try:
         # 清理数据库缓存
-        db_count = api.clear_cover_cache()
+        db_count = await api.clear_cover_cache()
         # 清理内存缓存
         memory_count = clear_cover_memory_cache()
         
@@ -402,23 +401,23 @@ async def _(bot: Bot, event: GroupMessageEvent):
     group_id = str(event.group_id)
     user_id = str(event.user_id)
     
-    if not db.is_group_enabled(group_id):
+    if not await db.is_group_enabled(group_id):
         return
     
     # 检查用户是否在排行榜中
-    if not db.is_user_in_group(user_id, group_id):
+    if not await db.is_user_in_group(user_id, group_id):
         await refresh_records.finish("你还未加入本群排行榜！")
         return
     
     # 检查刷新频率限制（一个自然日内最多2次）
     today = datetime.now().strftime("%Y-%m-%d")
-    last_update_time = db.get_last_update_time(user_id)
+    last_update_time = await db.get_last_update_time(user_id)
     
     if last_update_time:
         last_update_date = last_update_time.split("T")[0]  # 提取日期部分
         if last_update_date == today:
             # 检查今日刷新次数
-            refresh_count = db.get_daily_refresh_count(user_id, today)
+            refresh_count = await db.get_daily_refresh_count(user_id, today)
             if refresh_count >= 2:
                 await refresh_records.finish(
                     "❌ 今日刷新次数已达上限！\n"
@@ -443,17 +442,17 @@ async def _(bot: Bot, event: GroupMessageEvent):
             return
         
         # 更新成绩
-        db.update_user_records(user_id, records)
+        await db.update_user_records(user_id, records)
         
         # 记录刷新操作
-        db.log_refresh(user_id, today)
+        await db.log_refresh(user_id, today)
         
         # 获取更新后的信息
         nickname = records.get("nickname", "未知")
         rating = records.get("rating", 0)
         
         # 计算剩余刷新次数
-        remaining_count = 2 - db.get_daily_refresh_count(user_id, today)
+        remaining_count = 2 - await db.get_daily_refresh_count(user_id, today)
         
         # 发送成功消息
         await refresh_records.send(
@@ -567,7 +566,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
             return
     
     # 检查目标群是否启用了排行榜功能
-    if not db.is_group_enabled(group_id):
+    if not await db.is_group_enabled(group_id):
         if group_id == current_group_id:
             await join_ranking.finish("❌ 当前群未启用排行榜功能！")
         else:
@@ -585,7 +584,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
             return
     
     # 检查用户是否已经加入
-    if db.is_user_in_group(qq, group_id):
+    if await db.is_user_in_group(qq, group_id):
         if qq == user_id:
             if group_id == current_group_id:
                 await join_ranking.finish("你已经在本群排行榜中了！")
@@ -617,8 +616,8 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
         return
     
     # 添加用户到排行榜
-    db.add_user_to_group(qq, group_id)
-    db.update_user_records(qq, records)
+    await db.add_user_to_group(qq, group_id)
+    await db.update_user_records(qq, records)
     
     nickname = records.get("nickname", "未知")
     rating = records.get("rating", 0)
@@ -735,7 +734,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
             return
     
     # 检查目标群是否启用了排行榜功能
-    if not db.is_group_enabled(group_id):
+    if not await db.is_group_enabled(group_id):
         if group_id == current_group_id:
             await leave_ranking.finish("❌ 当前群未启用排行榜功能！")
         else:
@@ -743,7 +742,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
         return
     
     # 检查用户是否在排行榜中
-    if not db.is_user_in_group(qq, group_id):
+    if not await db.is_user_in_group(qq, group_id):
         if qq == user_id:
             if group_id == current_group_id:
                 await leave_ranking.finish("你还未加入本群排行榜！")
@@ -757,7 +756,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
         return
     
     # 从排行榜中移除用户
-    db.remove_user_from_group(qq, group_id)
+    await db.remove_user_from_group(qq, group_id)
     
     if qq == user_id:
         if group_id == current_group_id:
@@ -798,7 +797,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     """查询歌曲排行榜"""
     group_id = str(event.group_id)
     
-    if not db.is_group_enabled(group_id):
+    if not await db.is_group_enabled(group_id):
         return
     
     query = args.extract_plain_text().strip()
@@ -846,7 +845,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     song_title = song["title"]
     
     # 获取群内用户的该歌曲成绩
-    users = db.get_group_users(group_id)
+    users = await db.get_group_users(group_id)
     if not users:
         await query_ranking.finish("本群暂无用户加入排行榜！")
         return
@@ -854,7 +853,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     # 收集成绩数据
     ranking_data = []
     for qq in users:
-        records = db.get_user_records(qq)
+        records = await db.get_user_records(qq)
         if not records or "records" not in records:
             continue
         
@@ -967,7 +966,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     """为歌曲新增自定义别名"""
     group_id = str(event.group_id)
 
-    if not db.is_group_enabled(group_id):
+    if not await db.is_group_enabled(group_id):
         return
 
     arg_text = args.extract_plain_text().strip()
@@ -977,7 +976,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
 
     if not api.alias_data:
         await api.load_alias_data()
-        refresh_custom_alias_cache()
+        await refresh_custom_alias_cache()
 
     parts = arg_text.rsplit(maxsplit=1)
     if len(parts) < 2:
@@ -1021,14 +1020,14 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
             await add_alias_command.finish("该别名已被其他歌曲使用，无法重复添加。")
         return
 
-    success = db.add_custom_alias(song_id, new_alias)
+    success = await db.add_custom_alias(song_id, new_alias)
     if not success:
         await add_alias_command.finish("添加别名失败，可能已存在同名别名。")
         return
 
     api.add_custom_alias(song_id, new_alias)
 
-    custom_aliases = db.get_custom_aliases(song_id)
+    custom_aliases = await db.get_custom_aliases(song_id)
     custom_display = "、".join(custom_aliases) if custom_aliases else "无"
 
     msg = (
@@ -1045,7 +1044,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     """移除歌曲的自定义别名"""
     group_id = str(event.group_id)
 
-    if not db.is_group_enabled(group_id):
+    if not await db.is_group_enabled(group_id):
         return
 
     arg_text = args.extract_plain_text().strip()
@@ -1055,7 +1054,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
 
     if not api.alias_data:
         await api.load_alias_data()
-        refresh_custom_alias_cache()
+        await refresh_custom_alias_cache()
 
     parts = arg_text.rsplit(maxsplit=1)
     if len(parts) < 2:
@@ -1083,7 +1082,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     song_id = int(song["id"])
     song_title = song.get("title", "未知")
 
-    custom_aliases = db.get_custom_aliases(song_id)
+    custom_aliases = await db.get_custom_aliases(song_id)
     if not custom_aliases:
         await remove_alias_command.finish("该歌曲暂无自定义别名。")
         return
@@ -1092,14 +1091,14 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
         await remove_alias_command.finish("未找到要移除的自定义别名。")
         return
 
-    success = db.remove_custom_alias(song_id, target_alias)
+    success = await db.remove_custom_alias(song_id, target_alias)
     if not success:
         await remove_alias_command.finish("移除别名失败，请稍后再试。")
         return
 
     api.remove_custom_alias(song_id, target_alias)
 
-    remaining_aliases = db.get_custom_aliases(song_id)
+    remaining_aliases = await db.get_custom_aliases(song_id)
     remaining_display = "、".join(remaining_aliases) if remaining_aliases else "无"
 
     msg = (
@@ -1120,10 +1119,10 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     
     # 根据命令切换wmrt功能开关
     if command == "开启wmrt":
-        db.enable_wmrt(group_id)
+        await db.enable_wmrt(group_id)
         await toggle_wmrt.finish("✅ 已开启本群的Rating排行榜功能！")
     elif command == "关闭wmrt":
-        db.disable_wmrt(group_id)
+        await db.disable_wmrt(group_id)
         await toggle_wmrt.finish("✅ 已关闭本群的Rating排行榜功能！")
 
 
@@ -1177,7 +1176,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
             return
     
     # 获取群内用户
-    users = db.get_group_users(group_id)
+    users = await db.get_group_users(group_id)
     if not users:
         await query_rating_ranking.finish("本群暂无用户加入排行榜！")
         return
@@ -1185,7 +1184,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     # 收集用户 Rating 数据
     rating_data = []
     for qq in users:
-        records = db.get_user_records(qq)
+        records = await db.get_user_records(qq)
         if not records:
             continue
         
@@ -1286,7 +1285,7 @@ async def _(bot: Bot, event: GroupMessageEvent):
         current_group_ids = [str(group["group_id"]) for group in groups]
         
         # 清理数据库中已退出的群组数据
-        cleaned_count = db.clean_left_groups(current_group_ids)
+        cleaned_count = await db.clean_left_groups(current_group_ids)
         
         if cleaned_count > 0:
             await clean_database.finish(f"✅ 清理完成！共清理了 {cleaned_count} 个已退出群组的数据。")
@@ -1341,20 +1340,20 @@ async def auto_update_records():
     """每天0点15分自动更新所有用户的成绩"""
     logger.info("开始自动更新舞萌排行榜数据...")
     
-    all_users = db.get_all_users()
+    all_users = await db.get_all_users()
     success_count = 0
     fail_count = 0
     today = datetime.now().strftime("%Y-%m-%d")
     
     for qq in all_users:
         # 如果当日已有手动刷新记录，则跳过自动更新
-        if db.get_daily_refresh_count(qq, today) > 0:
+        if await db.get_daily_refresh_count(qq, today) > 0:
             logger.info(f"用户 {qq} 当日已有手动刷新记录，跳过自动更新")
             continue
         try:
             records = await api.get_player_records(qq)
             if records:
-                db.update_user_records(qq, records)
+                await db.update_user_records(qq, records)
                 success_count += 1
             else:
                 fail_count += 1
@@ -1372,7 +1371,7 @@ async def auto_update_alias():
     
     try:
         await api.load_alias_data_force()
-        refresh_custom_alias_cache()
+        await refresh_custom_alias_cache()
         logger.info("别名数据自动更新完成！")
     except Exception as e:
         logger.error(f"自动更新别名数据时出错: {e}")
@@ -1391,7 +1390,7 @@ async def auto_update_nicknames():
             return
         
         # 获取所有启用的群
-        enabled_groups = db.get_all_enabled_groups()
+        enabled_groups = await db.get_all_enabled_groups()
         if not enabled_groups:
             logger.info("没有启用的群，跳过昵称更新")
             return
@@ -1437,10 +1436,13 @@ async def auto_update_music_data():
 async def _():
     """插件启动时的初始化"""
     logger.info("舞萌排行榜插件已加载")
+    # 异步初始化数据库和缓存
+    await db.init()
+    await api.init()
     # 预加载歌曲数据和别名数据
     await api.load_music_data()
     await api.load_alias_data()
-    refresh_custom_alias_cache()
+    await refresh_custom_alias_cache()
     logger.info("歌曲数据和别名数据加载完成")
     
     # 预渲染帮助图片
@@ -1453,7 +1455,7 @@ async def _(bot: Bot):
     logger.info("Bot已连接，开始初始化用户昵称缓存")
     
     try:
-        enabled_groups = db.get_all_enabled_groups()
+        enabled_groups = await db.get_all_enabled_groups()
         if not enabled_groups:
             logger.info("没有启用的群，跳过昵称缓存初始化")
             return
