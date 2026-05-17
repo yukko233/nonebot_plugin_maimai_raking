@@ -3,6 +3,7 @@ from io import BytesIO
 from typing import List, Dict, Any, Optional
 from PIL import Image, ImageDraw, ImageFont
 from pilmoji import Pilmoji
+from pilmoji.source import GoogleEmojiSource
 import os
 from pathlib import Path
 from nonebot.log import logger
@@ -172,7 +173,7 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     # 创建图片
     img = Image.new("RGB", (width, height), color=(250, 250, 252))
     draw = ImageDraw.Draw(img)
-    pilmoji = Pilmoji(img)
+    pilmoji = Pilmoji(img, source=GoogleEmojiSource)
     
     # 使用缓存的字体
     font_title = _get_font(32)
@@ -632,7 +633,7 @@ def render_help_image(is_admin: bool = False) -> bytes:
 
     img = Image.new("RGB", (card_width, total_height), COLOR_BG)
     draw = ImageDraw.Draw(img)
-    pilmoji = Pilmoji(img)
+    pilmoji = Pilmoji(img, source=GoogleEmojiSource)
 
     # 绘制头部
     header_y = padding
