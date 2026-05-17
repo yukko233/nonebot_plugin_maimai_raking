@@ -32,7 +32,7 @@ _rounded_mask_cache = {}
 def _get_font_path() -> Optional[str]:
     """获取字体文件路径（带缓存）"""
     try:
-        custom_fonts = list(FONT_DIR.glob("*.ttf")) + list(FONT_DIR.glob("*.ttc"))
+        custom_fonts = list(FONT_DIR.glob("*.ttf")) + list(FONT_DIR.glob("*.ttc")) + list(FONT_DIR.glob("*.otf"))
         if custom_fonts:
             return str(custom_fonts[0])
         
