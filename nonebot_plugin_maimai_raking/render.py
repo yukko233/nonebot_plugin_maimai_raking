@@ -30,6 +30,48 @@ _font_cache = {}
 _cover_cache = {}
 _rounded_mask_cache = {}
 
+# ── 预渲染静态元素（惰性初始化，确保 _get_font_path 已定义） ──
+_STATIC_HEADER_OVERLAY: Optional[Image.Image] = None
+_STATIC_FOOTER_OVERLAY: Optional[Image.Image] = None
+_TYPE_WIDTHS: Optional[dict] = None
+
+
+def _ensure_static_resources():
+    """首次渲染时初始化预渲染资源"""
+    global _STATIC_HEADER_OVERLAY, _STATIC_FOOTER_OVERLAY, _TYPE_WIDTHS
+    if _TYPE_WIDTHS is not None:
+        return
+
+    # 类型标签宽度
+    tmp = Image.new("RGB", (1, 1))
+    d = ImageDraw.Draw(tmp)
+    font_small = _get_font(18)
+    _TYPE_WIDTHS = {}
+    for t in ("DX谱面", "标准谱面"):
+        bbox = d.textbbox((0, 0), t, font=font_small)
+        _TYPE_WIDTHS[t] = (bbox[2] - bbox[0]) + 20
+
+    # 表头覆盖层（排名 / 玩家 / 成绩 / FC/FS / 评级）
+    overlay = Image.new("RGBA", (850, 50), (240, 240, 245, 255))
+    d = ImageDraw.Draw(overlay)
+    font_normal = _get_font(24)
+    y = 25
+    d.text((70, y), "排名", font=font_normal, fill=(80, 80, 100), anchor="mm")
+    d.text((200, y), "玩家", font=font_normal, fill=(80, 80, 100), anchor="mm")
+    d.text((450, y), "成绩", font=font_normal, fill=(80, 80, 100), anchor="mm")
+    d.text((620, y), "FC/FS", font=font_normal, fill=(80, 80, 100), anchor="mm")
+    d.text((750, y), "评级", font=font_normal, fill=(80, 80, 100), anchor="mm")
+    _STATIC_HEADER_OVERLAY = overlay
+
+    # 页脚覆盖层（分隔线 + 版权文字）
+    overlay = Image.new("RGBA", (850, 70), (250, 250, 252, 255))
+    d = ImageDraw.Draw(overlay)
+    font_small = _get_font(18)
+    d.line([(50, 15), (800, 15)], fill=(200, 200, 220), width=1)
+    d.text((425, 40), "舞萌排行榜 | Geneted by @MaiMaiRankingBot",
+           font=font_small, fill=(150, 150, 170), anchor="mm")
+    _STATIC_FOOTER_OVERLAY = overlay
+
 
 @lru_cache(maxsize=CACHE_SIZE)
 def _get_font_path() -> Optional[str]:
@@ -102,31 +144,48 @@ def _get_rounded_mask(size: int) -> Image.Image:
 
 
 async def _get_cached_cover(api, song_id: int, cover_size: int) -> Optional[Image.Image]:
-    """获取缓存的封面 Image（已缩放 + 圆角遮罩，直接可 paste）"""
+    """获取缓存的封面 Image（已缩放 + 圆角遮罩，直接可 paste）
+
+    缓存层级：内存 → DB cover_thumbnail → DB cover_cache/HTTP
+    """
+    # ── 1. 内存缓存 ──
     if song_id in _cover_cache:
         return _cover_cache[song_id]
-    
+
     if not api:
         return None
-    
+
     try:
+        # ── 2. DB 缩略图缓存 ──
+        thumb_bytes = await api.get_cover_thumbnail(song_id)
+        if thumb_bytes:
+            cover_img = Image.open(BytesIO(thumb_bytes)).convert("RGBA")
+            _cover_cache[song_id] = cover_img
+            return cover_img
+
+        # ── 3. 原始封面缓存 / HTTP → 处理后写入缩略图 DB ──
         cover_data = await api.get_song_cover(song_id)
         if cover_data:
             cover_img = Image.open(BytesIO(cover_data)).convert("RGBA")
             cover_img = cover_img.resize((cover_size, cover_size), Image.Resampling.BILINEAR)
             mask = _get_rounded_mask(cover_size)
             cover_img.putalpha(mask)
-            
-            # 限制缓存大小
+
+            # 持久化缩略图到 DB（供下次启动使用）
+            bio = BytesIO()
+            cover_img.save(bio, format="PNG")
+            await api.save_cover_thumbnail(song_id, bio.getvalue())
+
+            # 限制内存缓存大小
             if len(_cover_cache) >= COVER_CACHE_SIZE:
                 oldest_key = next(iter(_cover_cache))
                 del _cover_cache[oldest_key]
-            
+
             _cover_cache[song_id] = cover_img
             return cover_img
     except Exception as e:
         logger.warning(f"获取封面失败: {e}")
-    
+
     return None
 
 
@@ -169,6 +228,9 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     Returns:
         图片字节数据
     """
+    # 首次渲染时初始化预渲染静态资源
+    _ensure_static_resources()
+
     # 图片尺寸
     width = 850
     header_height = 240 # 增加高度以容纳所有难度定数显示
@@ -237,8 +299,7 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     type_bg = (255, 228, 225) if song_type == "DX" else (230, 240, 255)
     type_text_color = (220, 100, 100) if song_type == "DX" else (100, 150, 220)
     
-    type_bbox = draw.textbbox((0, 0), type_text, font=font_small)
-    type_width = (type_bbox[2] - type_bbox[0]) + 20
+    type_width = _TYPE_WIDTHS[type_text]
     
     draw.rounded_rectangle(
         [(tag_x, tags_row1_y), (tag_x + type_width, tags_row1_y + tag_height)],
@@ -321,21 +382,29 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
             draw.text((box_x + ds_box_size // 2, tags_row2_y + ds_box_size // 2),
                     ds_text, font=font_normal, fill=text_color, anchor="mm")
     
-    # 绘制表头背景
+    # 绘制表头（使用预渲染覆盖层）
     y_offset = header_height
-    draw.rectangle([(0, y_offset), (width, y_offset + table_header_height)], fill=(240, 240, 245))
-    
-    # 绘制表头文字（移除了难度列）
-    header_y = y_offset + table_header_height // 2
-    draw.text((70, header_y), "排名", font=font_normal, fill=(80, 80, 100), anchor="mm")
-    draw.text((200, header_y), "玩家", font=font_normal, fill=(80, 80, 100), anchor="mm")
-    draw.text((450, header_y), "成绩", font=font_normal, fill=(80, 80, 100), anchor="mm")
-    draw.text((620, header_y), "FC/FS", font=font_normal, fill=(80, 80, 100), anchor="mm")
-    draw.text((750, header_y), "评级", font=font_normal, fill=(80, 80, 100), anchor="mm")
-    
+    img.paste(_STATIC_HEADER_OVERLAY, (0, y_offset), _STATIC_HEADER_OVERLAY)
     y_offset += table_header_height
     
-    # 直接按成绩排名（因为传入的数据已经是单一难度且已排序）
+    # ── 图标批量预取（避免循环内反复 _get_icon） ──
+    icon_size = (35, 35)
+    rate_icon_size = (80, 36)
+    need_fc, need_fs, need_rate = set(), set(), set()
+    for data in ranking_data:
+        fc = data.get("fc", "").lower()
+        fs = data.get("fs", "").lower()
+        rate = data.get("rate", "").lower()
+        if fc: need_fc.add(fc)
+        if fs: need_fs.add(fs)
+        if rate: need_rate.add(rate)
+    _icons_fc = {t: _get_icon(t, icon_size) for t in need_fc}
+    _icons_fs = {t: _get_icon(t, icon_size) for t in need_fs}
+    _icons_rate = {t: _get_icon(t, rate_icon_size) for t in need_rate}
+    fc_fs_x = 620
+    fc_fs_total_w = 2 * icon_size[0] + 5
+
+    # ── 行渲染循环 ──
     for i, data in enumerate(ranking_data):
         rank = i + 1
         
@@ -430,50 +499,28 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
         score_text = f"{achievements:.4f}%"
         draw.text((450, y_offset + row_height // 2), score_text, font=font_normal, fill=(50, 50, 70), anchor="mm")
         
-        # FC/FS 图标（始终两个位置，无图标时留白）
-        icon_size = (35, 35)  # 正方形图标
-        fc_fs_x = 620  # FC/FS 列的中心位置
+        # FC/FS 图标（使用预取图标）
+        icon_x = fc_fs_x - fc_fs_total_w // 2
         
-        # 固定两个图标的总宽度
-        total_width = 2 * icon_size[0] + 5  # 两个图标 + 一个间隙
-        icon_x = fc_fs_x - total_width // 2
-        
-        # 绘制 FC 图标（有则绘制，无则占位）
-        if fc:
-            fc_icon = _get_icon(fc, icon_size)
-            if fc_icon:
-                img.paste(fc_icon, (icon_x, y_offset + row_height // 2 - icon_size[1] // 2), fc_icon)
-        # 移动到下一个图标位置
+        fc_icon = _icons_fc.get(fc) if fc else None
+        if fc_icon:
+            img.paste(fc_icon, (icon_x, y_offset + row_height // 2 - icon_size[1] // 2), fc_icon)
         icon_x += icon_size[0] + 5
         
-        # 绘制 FS 图标（有则绘制，无则占位）
-        if fs:
-            fs_icon = _get_icon(fs, icon_size)
-            if fs_icon:
-                img.paste(fs_icon, (icon_x, y_offset + row_height // 2 - icon_size[1] // 2), fs_icon)
+        fs_icon = _icons_fs.get(fs) if fs else None
+        if fs_icon:
+            img.paste(fs_icon, (icon_x, y_offset + row_height // 2 - icon_size[1] // 2), fs_icon)
         
-        # 评级图标
+        # 评级图标（使用预取图标）
         rate = data.get("rate", "").lower()
-        if rate:
-            rate_icon_size = (80, 36)  # 保持原始比例
-            rate_icon = _get_icon(rate, rate_icon_size)
-            if rate_icon:
-                # 粘贴图标（居中）
-                img.paste(rate_icon, (750 - rate_icon_size[0] // 2, y_offset + row_height // 2 - rate_icon_size[1] // 2), rate_icon)
+        rate_icon = _icons_rate.get(rate) if rate else None
+        if rate_icon:
+            img.paste(rate_icon, (750 - rate_icon_size[0] // 2, y_offset + row_height // 2 - rate_icon_size[1] // 2), rate_icon)
         
         y_offset += row_height
     
-    # 绘制页脚（带装饰线）
-    footer_y = height - footer_height
-    draw.line([(50, footer_y + 15), (width - 50, footer_y + 15)], fill=(200, 200, 220), width=1)
-    
-    draw.text(
-        (width // 2, footer_y + 40),
-        "舞萌排行榜 | Geneted by @MaiMaiRankingBot",
-        font=font_small,
-        fill=(150, 150, 170),
-        anchor="mm"
-    )
+    # 绘制页脚（使用预渲染覆盖层）
+    img.paste(_STATIC_FOOTER_OVERLAY, (0, height - footer_height), _STATIC_FOOTER_OVERLAY)
     
     # 转换为字节
     bio = BytesIO()

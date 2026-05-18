@@ -64,6 +64,13 @@ class MaimaiAPI:
                     cached_at TEXT NOT NULL
                 )
             """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS cover_thumbnail (
+                    song_id INTEGER PRIMARY KEY,
+                    thumbnail BLOB NOT NULL,
+                    cached_at TEXT NOT NULL
+                )
+            """)
             await db.commit()
             logger.info("API 缓存数据库初始化完成")
 
@@ -605,8 +612,38 @@ class MaimaiAPI:
             logger.error(f"获取歌曲 {song_id} 封面时出错: {e}")
             return None
 
+    async def get_cover_thumbnail(self, song_id: int) -> Optional[bytes]:
+        """从数据库获取已处理好的缩略图（197×197 圆角 PNG）"""
+        try:
+            async with aiosqlite.connect(self.cache_db_file) as db:
+                db.row_factory = sqlite3.Row
+                cursor = await db.execute(
+                    "SELECT thumbnail FROM cover_thumbnail WHERE song_id = ?",
+                    (song_id,)
+                )
+                row = await cursor.fetchone()
+                return row["thumbnail"] if row else None
+        except Exception as e:
+            logger.warning(f"读取缩略图缓存失败: {e}")
+            return None
+
+    async def save_cover_thumbnail(self, song_id: int, thumbnail_data: bytes):
+        """保存处理好的缩略图到数据库"""
+        try:
+            async with aiosqlite.connect(self.cache_db_file) as db:
+                db.row_factory = sqlite3.Row
+                from datetime import datetime
+                cached_at = datetime.now().isoformat()
+                await db.execute(
+                    "INSERT OR REPLACE INTO cover_thumbnail (song_id, thumbnail, cached_at) VALUES (?, ?, ?)",
+                    (song_id, thumbnail_data, cached_at)
+                )
+                await db.commit()
+        except Exception as e:
+            logger.warning(f"保存缩略图缓存失败: {e}")
+
     async def clear_cover_cache(self) -> int:
-        """清除所有歌曲封面缓存
+        """清除所有歌曲封面缓存（原始封面 + 缩略图）
 
         Returns:
             清除的缓存记录数量
@@ -616,9 +653,10 @@ class MaimaiAPI:
                 db.row_factory = sqlite3.Row
                 cursor = await db.execute("DELETE FROM cover_cache")
                 count = cursor.rowcount
+                await db.execute("DELETE FROM cover_thumbnail")
                 await db.commit()
 
-            logger.info(f"已清除 {count} 条封面缓存")
+            logger.info(f"已清除 {count} 条封面缓存（含缩略图）")
             return count
         except Exception as e:
             logger.error(f"清除封面缓存失败: {e}")
