@@ -4,11 +4,14 @@ from typing import List, Dict, Any, Optional
 from PIL import Image, ImageDraw, ImageFont
 from pilmoji import Pilmoji
 from pilmoji.source import GoogleEmojiSource
-import os
 from pathlib import Path
+import os
 from nonebot.log import logger
 from functools import lru_cache
 import asyncio
+
+# 模块级复用 GoogleEmojiSource 实例（避免每次渲染重新初始化 emoji 索引）
+_emoji_source = GoogleEmojiSource()
 
 # 图标文件夹路径
 ICON_DIR = Path(__file__).parent / "icon"
@@ -78,7 +81,7 @@ def _get_icon(icon_name: str, size: tuple) -> Optional[Image.Image]:
     
     try:
         icon = Image.open(icon_path).convert("RGBA")
-        icon = icon.resize(size, Image.Resampling.LANCZOS)
+        icon = icon.resize(size, Image.Resampling.BILINEAR)
         _icon_cache[cache_key] = icon
         return icon
     except Exception:
@@ -98,8 +101,8 @@ def _get_rounded_mask(size: int) -> Image.Image:
     return mask
 
 
-async def _get_cached_cover(api, song_id: int) -> Optional[bytes]:
-    """获取缓存的封面数据"""
+async def _get_cached_cover(api, song_id: int, cover_size: int) -> Optional[Image.Image]:
+    """获取缓存的封面 Image（已缩放 + 圆角遮罩，直接可 paste）"""
     if song_id in _cover_cache:
         return _cover_cache[song_id]
     
@@ -109,14 +112,18 @@ async def _get_cached_cover(api, song_id: int) -> Optional[bytes]:
     try:
         cover_data = await api.get_song_cover(song_id)
         if cover_data:
+            cover_img = Image.open(BytesIO(cover_data)).convert("RGBA")
+            cover_img = cover_img.resize((cover_size, cover_size), Image.Resampling.BILINEAR)
+            mask = _get_rounded_mask(cover_size)
+            cover_img.putalpha(mask)
+            
             # 限制缓存大小
             if len(_cover_cache) >= COVER_CACHE_SIZE:
-                # 移除最旧的缓存项
                 oldest_key = next(iter(_cover_cache))
                 del _cover_cache[oldest_key]
             
-            _cover_cache[song_id] = cover_data
-            return cover_data
+            _cover_cache[song_id] = cover_img
+            return cover_img
     except Exception as e:
         logger.warning(f"获取封面失败: {e}")
     
@@ -173,7 +180,7 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     # 创建图片
     img = Image.new("RGB", (width, height), color=(250, 250, 252))
     draw = ImageDraw.Draw(img)
-    pilmoji = Pilmoji(img, source=GoogleEmojiSource)
+    pilmoji = Pilmoji(img, source=_emoji_source)
     
     # 使用缓存的字体
     font_title = _get_font(32)
@@ -196,19 +203,8 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     if api:
         try:
             song_id = int(song.get("id", 0))
-            cover_data = await _get_cached_cover(api, song_id)
-            if cover_data:
-                cover_img = Image.open(BytesIO(cover_data)).convert("RGBA")
-                # 调整封面大小
-                cover_img = cover_img.resize((cover_size, cover_size), Image.Resampling.LANCZOS)
-                
-                # 使用缓存的圆角遮罩
-                mask = _get_rounded_mask(cover_size)
-                
-                # 应用圆角遮罩
-                cover_img.putalpha(mask)
-                
-                # 粘贴封面（无阴影，简洁风格）
+            cover_img = await _get_cached_cover(api, song_id, cover_size)
+            if cover_img:
                 img.paste(cover_img, (cover_x, cover_y), cover_img)
         except Exception as e:
             logger.warning(f"绘制封面失败: {e}")
@@ -223,12 +219,12 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     title_y = info_y + 15
     
     # 深色文字，无阴影
-    pilmoji.text((title_x, title_y), song_title, font=font_title, fill=(40, 40, 40), anchor="lm")
+    draw.text((title_x, title_y), song_title, font=font_title, fill=(40, 40, 40), anchor="lm")
     
     # 绘制歌曲ID（在标题下方）
     song_id = song.get("id", "未知")
     id_y = title_y + 40
-    pilmoji.text((title_x, id_y), f"ID: {song_id}", font=font_small, fill=(120, 120, 140), anchor="lm")
+    draw.text((title_x, id_y), f"ID: {song_id}", font=font_small, fill=(120, 120, 140), anchor="lm")
     
     # 绘制类型标签和版本标签（参考图片风格）
     tags_row1_y = title_y + 70  # 增加间距以容纳ID
@@ -248,8 +244,8 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
         [(tag_x, tags_row1_y), (tag_x + type_width, tags_row1_y + tag_height)],
         radius=8, fill=type_bg
     )
-    pilmoji.text((tag_x + type_width // 2, tags_row1_y + tag_height // 2), type_text,
-              font=font_small, fill=type_text_color, anchor="mm")
+    draw.text((tag_x + type_width // 2, tags_row1_y + tag_height // 2), type_text,
+             font=font_small, fill=type_text_color, anchor="mm")
     
     # 版本标签（如"DX2025"）- 简化处理，暂时不显示具体版本
     
@@ -322,8 +318,8 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
             
             # 绘制定数数值（大字）
             ds_text = f"{ds_val:.1f}"
-            pilmoji.text((box_x + ds_box_size // 2, tags_row2_y + ds_box_size // 2),
-                     ds_text, font=font_normal, fill=text_color, anchor="mm")
+            draw.text((box_x + ds_box_size // 2, tags_row2_y + ds_box_size // 2),
+                    ds_text, font=font_normal, fill=text_color, anchor="mm")
     
     # 绘制表头背景
     y_offset = header_height
@@ -331,11 +327,11 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     
     # 绘制表头文字（移除了难度列）
     header_y = y_offset + table_header_height // 2
-    pilmoji.text((70, header_y), "排名", font=font_normal, fill=(80, 80, 100), anchor="mm")
-    pilmoji.text((200, header_y), "玩家", font=font_normal, fill=(80, 80, 100), anchor="mm")
-    pilmoji.text((450, header_y), "成绩", font=font_normal, fill=(80, 80, 100), anchor="mm")
-    pilmoji.text((620, header_y), "FC/FS", font=font_normal, fill=(80, 80, 100), anchor="mm")
-    pilmoji.text((750, header_y), "评级", font=font_normal, fill=(80, 80, 100), anchor="mm")
+    draw.text((70, header_y), "排名", font=font_normal, fill=(80, 80, 100), anchor="mm")
+    draw.text((200, header_y), "玩家", font=font_normal, fill=(80, 80, 100), anchor="mm")
+    draw.text((450, header_y), "成绩", font=font_normal, fill=(80, 80, 100), anchor="mm")
+    draw.text((620, header_y), "FC/FS", font=font_normal, fill=(80, 80, 100), anchor="mm")
+    draw.text((750, header_y), "评级", font=font_normal, fill=(80, 80, 100), anchor="mm")
     
     y_offset += table_header_height
     
@@ -365,16 +361,16 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
         
         if rank == 1:
             # 金色第一名
-            pilmoji.text((rank_x, rank_y), "1st", font=font_normal, fill=(255, 215, 0), anchor="mm")
+            draw.text((rank_x, rank_y), "1st", font=font_normal, fill=(255, 215, 0), anchor="mm")
         elif rank == 2:
             # 银色第二名
-            pilmoji.text((rank_x, rank_y), "2nd", font=font_normal, fill=(192, 192, 192), anchor="mm")
+            draw.text((rank_x, rank_y), "2nd", font=font_normal, fill=(192, 192, 192), anchor="mm")
         elif rank == 3:
             # 铜色第三名
-            pilmoji.text((rank_x, rank_y), "3rd", font=font_normal, fill=(205, 127, 50), anchor="mm")
+            draw.text((rank_x, rank_y), "3rd", font=font_normal, fill=(205, 127, 50), anchor="mm")
         else:
             # 普通排名
-            pilmoji.text((rank_x, rank_y), str(rank), font=font_normal, fill=(100, 100, 120), anchor="mm")
+            draw.text((rank_x, rank_y), str(rank), font=font_normal, fill=(100, 100, 120), anchor="mm")
         
         # 玩家昵称（根据长度调整字体和换行）
         nickname = data.get("nickname", "未知")
@@ -432,7 +428,7 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
         
         # 成绩文本（加粗显示）
         score_text = f"{achievements:.4f}%"
-        pilmoji.text((450, y_offset + row_height // 2), score_text, font=font_normal, fill=(50, 50, 70), anchor="mm")
+        draw.text((450, y_offset + row_height // 2), score_text, font=font_normal, fill=(50, 50, 70), anchor="mm")
         
         # FC/FS 图标（始终两个位置，无图标时留白）
         icon_size = (35, 35)  # 正方形图标
@@ -471,7 +467,7 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     footer_y = height - footer_height
     draw.line([(50, footer_y + 15), (width - 50, footer_y + 15)], fill=(200, 200, 220), width=1)
     
-    pilmoji.text(
+    draw.text(
         (width // 2, footer_y + 40),
         "舞萌排行榜 | Geneted by @MaiMaiRankingBot",
         font=font_small,
@@ -479,10 +475,10 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
         anchor="mm"
     )
     
-    # 转换为字节（优化保存性能）
+    # 转换为字节
     bio = BytesIO()
-    # 使用optimize=True和适当的压缩级别
-    img.save(bio, format="PNG", optimize=True, compress_level=6)
+    # 快速压缩（compress_level=1 兼顾速度与体积）
+    img.save(bio, format="PNG", optimize=True, compress_level=1)
     return bio.getvalue()
 
 
@@ -568,7 +564,7 @@ def _draw_rounded_rect(draw: ImageDraw, x: int, y: int, w: int, h: int, r: int, 
     draw.rounded_rectangle([(x, y), (x + w, y + h)], radius=r, fill=fill)
 
 
-def _draw_command_card(draw: ImageDraw, pilmoji: Pilmoji, font_normal, font_small, x: int, y: int, cmd: str, desc: str, card_width: int):
+def _draw_command_card(draw: ImageDraw, font_normal, font_small, x: int, y: int, cmd: str, desc: str, card_width: int):
     """绘制单个命令卡片"""
     card_height = 52
     card_x = x + 20
@@ -577,13 +573,13 @@ def _draw_command_card(draw: ImageDraw, pilmoji: Pilmoji, font_normal, font_smal
 
     _draw_rounded_rect(draw, card_x, card_y, card_w, card_height, 8, COLOR_CARD_BG)
 
-    pilmoji.text((card_x + 16, card_y + 10), cmd, font=font_normal, fill=COLOR_PRIMARY)
-    pilmoji.text((card_x + 16, card_y + 30), desc, font=font_small, fill=COLOR_TEXT_SECONDARY)
+    draw.text((card_x + 16, card_y + 10), cmd, font=font_normal, fill=COLOR_PRIMARY)
+    draw.text((card_x + 16, card_y + 30), desc, font=font_small, fill=COLOR_TEXT_SECONDARY)
 
     return card_height + 6
 
 
-def _draw_section(draw: ImageDraw, pilmoji: Pilmoji, font_title, font_normal, font_small, x: int, y: int, title: str, commands: list, card_width: int) -> int:
+def _draw_section(draw: ImageDraw, font_title, font_normal, font_small, x: int, y: int, title: str, commands: list, card_width: int) -> int:
     """绘制一个分区"""
     section_padding = 16
     section_x = x + 20
@@ -593,11 +589,11 @@ def _draw_section(draw: ImageDraw, pilmoji: Pilmoji, font_title, font_normal, fo
 
     _draw_rounded_rect(draw, section_x, section_y, section_w, section_h, 12, COLOR_SECTION_BG)
 
-    pilmoji.text((section_x + 20, section_y + 16), title, font=font_title, fill=COLOR_TEXT_PRIMARY)
+    draw.text((section_x + 20, section_y + 16), title, font=font_title, fill=COLOR_TEXT_PRIMARY)
 
     cmd_y = section_y + 50
     for cmd, desc in commands:
-        cmd_y += _draw_command_card(draw, pilmoji, font_normal, font_small, section_x, cmd_y, cmd, desc, section_w)
+        cmd_y += _draw_command_card(draw, font_normal, font_small, section_x, cmd_y, cmd, desc, section_w)
 
     return section_h + 16
 
@@ -633,25 +629,25 @@ def render_help_image(is_admin: bool = False) -> bytes:
 
     img = Image.new("RGB", (card_width, total_height), COLOR_BG)
     draw = ImageDraw.Draw(img)
-    pilmoji = Pilmoji(img, source=GoogleEmojiSource)
+    pilmoji = Pilmoji(img, source=_emoji_source)
 
     # 绘制头部
     header_y = padding
     _draw_rounded_rect(draw, 20, header_y, card_width - 40, 60, 12, COLOR_PRIMARY)
     title_text = "舞萌排行榜 - 管理帮助" if is_admin else "舞萌排行榜 - 使用帮助"
-    pilmoji.text((card_width // 2, header_y + 30), title_text, font=font_header, fill=(255, 255, 255), anchor="mm")
+    draw.text((card_width // 2, header_y + 30), title_text, font=font_header, fill=(255, 255, 255), anchor="mm")
 
     # 绘制各分区
     section_y = header_y + 80
     for title, cmds in commands:
-        section_y += _draw_section(draw, pilmoji, font_title, font_normal, font_small, 0, section_y, title, cmds, card_width)
+        section_y += _draw_section(draw, font_title, font_normal, font_small, 0, section_y, title, cmds, card_width)
 
     # 绘制页脚
     footer_y = total_height - footer_height
     draw.line([(40, footer_y + 10), (card_width - 40, footer_y + 10)], fill=COLOR_BORDER, width=1)
 
     bio = BytesIO()
-    img.save(bio, format="PNG", optimize=True, compress_level=6)
+    img.save(bio, format="PNG", optimize=True, compress_level=1)
     return bio.getvalue()
 
 
