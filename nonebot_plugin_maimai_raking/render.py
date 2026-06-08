@@ -707,6 +707,7 @@ def render_help_image(is_admin: bool = False) -> bytes:
     Returns:
         图片字节数据
     """
+    _ensure_static_resources()
     font_path = _get_font_path()
     if not font_path:
         logger.error("未找到可用字体，无法渲染帮助图片")
