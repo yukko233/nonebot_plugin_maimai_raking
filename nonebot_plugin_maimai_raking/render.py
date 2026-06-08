@@ -9,9 +9,43 @@ import os
 from nonebot.log import logger
 from functools import lru_cache
 import asyncio
+import hashlib
+import hashlib
 
-# 模块级复用 GoogleEmojiSource 实例（避免每次渲染重新初始化 emoji 索引）
-_emoji_source = GoogleEmojiSource()
+class CachedEmojiSource(GoogleEmojiSource):
+    """带本地磁盘缓存的 Google Emoji 图片来源
+
+    首次使用某个 emoji 时从 CDN 下载并缓存到本地磁盘；
+    之后直接从本地加载，不依赖网络。CDN 不可用时仍可显示已缓存的 emoji。
+    """
+    CACHE_DIR = Path(__file__).parent.parent / "data" / "emoji_cache"
+
+    def __init__(self):
+        super().__init__()
+        self.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+    def get_emoji(self, emoji: str) -> Optional[BytesIO]:
+        # 用 emoji 字符的 MD5 作为文件名
+        emoji_hash = hashlib.md5(emoji.encode('utf-8')).hexdigest()
+        cache_path = self.CACHE_DIR / f"{emoji_hash}.png"
+
+        # 缓存命中 → 直接从磁盘读取
+        if cache_path.exists():
+            return BytesIO(cache_path.read_bytes())
+
+        # 缓存未命中 → 下载并保存到磁盘
+        result = super().get_emoji(emoji)
+        if result is not None:
+            data = result.getvalue()
+            cache_path.write_bytes(data)
+            return BytesIO(data)
+
+        logger.warning(f"下载 emoji 图片失败（CDN 不可达?）: {emoji}")
+        return None
+
+
+# 模块级复用 CachedEmojiSource 实例（带本地磁盘缓存）
+_emoji_source = CachedEmojiSource()
 
 # 图标文件夹路径
 ICON_DIR = Path(__file__).parent / "icon"
@@ -537,6 +571,12 @@ def clear_cache():
     _cover_cache.clear()
     _rounded_mask_cache.clear()
     _get_font_path.cache_clear()
+    # 清理 emoji 磁盘缓存
+    import shutil
+    if CachedEmojiSource.CACHE_DIR.exists():
+        shutil.rmtree(CachedEmojiSource.CACHE_DIR)
+        CachedEmojiSource.CACHE_DIR.mkdir(parents=True)
+        logger.info("已清理 emoji 磁盘缓存")
     logger.info("已清理所有渲染缓存")
 
 
