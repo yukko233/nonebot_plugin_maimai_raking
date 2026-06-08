@@ -71,6 +71,13 @@ class MaimaiAPI:
                     cached_at TEXT NOT NULL
                 )
             """)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS help_image_cache (
+                    is_admin INTEGER PRIMARY KEY,
+                    data BLOB NOT NULL,
+                    cached_at TEXT NOT NULL
+                )
+            """)
             await db.commit()
             logger.info("API 缓存数据库初始化完成")
 
@@ -661,6 +668,35 @@ class MaimaiAPI:
         except Exception as e:
             logger.error(f"清除封面缓存失败: {e}")
             return 0
+
+    async def get_help_image(self, is_admin: bool = False) -> Optional[bytes]:
+        """从数据库获取预渲染的帮助图片"""
+        try:
+            async with aiosqlite.connect(self.cache_db_file) as db:
+                db.row_factory = sqlite3.Row
+                cursor = await db.execute(
+                    "SELECT data FROM help_image_cache WHERE is_admin = ?", (1 if is_admin else 0,)
+                )
+                row = await cursor.fetchone()
+                return row["data"] if row else None
+        except Exception as e:
+            logger.warning(f"读取帮助图片缓存失败: {e}")
+            return None
+
+    async def save_help_image(self, is_admin: bool, data: bytes):
+        """保存预渲染的帮助图片到数据库"""
+        try:
+            async with aiosqlite.connect(self.cache_db_file) as db:
+                db.row_factory = sqlite3.Row
+                from datetime import datetime
+                cached_at = datetime.now().isoformat()
+                await db.execute(
+                    "INSERT OR REPLACE INTO help_image_cache (is_admin, data, cached_at) VALUES (?, ?, ?)",
+                    (1 if is_admin else 0, data, cached_at)
+                )
+                await db.commit()
+        except Exception as e:
+            logger.warning(f"保存帮助图片缓存失败: {e}")
 
     async def close(self):
         """关闭 HTTP 客户端"""

@@ -1,6 +1,6 @@
 [project]
 name = "nonebot-plugin-maimai-raking"
-version = "0.1.4"
+version = "0.1.5"
 description = "一个基于 NoneBot2 的舞萌 DX 分群排行榜插件"
 authors = [
     {name = "yukko"},

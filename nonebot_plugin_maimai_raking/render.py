@@ -10,42 +10,52 @@ from nonebot.log import logger
 from functools import lru_cache
 import asyncio
 import hashlib
-import hashlib
+import sqlite3
 
 class CachedEmojiSource(GoogleEmojiSource):
-    """带本地磁盘缓存的 Google Emoji 图片来源
+    """带 SQLite 数据库缓存的 Google Emoji 图片来源
 
-    首次使用某个 emoji 时从 CDN 下载并缓存到本地磁盘；
-    之后直接从本地加载，不依赖网络。CDN 不可用时仍可显示已缓存的 emoji。
+    首次使用某个 emoji 时从 CDN 下载并缓存到 SQLite DB；
+    之后直接从 DB 加载，不依赖网络。CDN 不可用时仍可显示已缓存的 emoji。
     """
-    CACHE_DIR = Path(__file__).parent.parent / "data" / "emoji_cache"
 
-    def __init__(self):
+    def __init__(self, db_path: str):
         super().__init__()
-        self.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        self._db_path = db_path
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._conn.execute("""
+            CREATE TABLE IF NOT EXISTS emoji_cache (
+                emoji TEXT PRIMARY KEY,
+                data BLOB NOT NULL
+            )
+        """)
+        self._conn.commit()
 
     def get_emoji(self, emoji: str) -> Optional[BytesIO]:
-        # 用 emoji 字符的 MD5 作为文件名
-        emoji_hash = hashlib.md5(emoji.encode('utf-8')).hexdigest()
-        cache_path = self.CACHE_DIR / f"{emoji_hash}.png"
+        # 缓存命中 → 直接从 DB 读取
+        row = self._conn.execute(
+            "SELECT data FROM emoji_cache WHERE emoji = ?", (emoji,)
+        ).fetchone()
+        if row:
+            return BytesIO(row[0])
 
-        # 缓存命中 → 直接从磁盘读取
-        if cache_path.exists():
-            return BytesIO(cache_path.read_bytes())
-
-        # 缓存未命中 → 下载并保存到磁盘
+        # 缓存未命中 → 下载并保存到 DB
         result = super().get_emoji(emoji)
         if result is not None:
             data = result.getvalue()
-            cache_path.write_bytes(data)
+            self._conn.execute(
+                "INSERT OR REPLACE INTO emoji_cache (emoji, data) VALUES (?, ?)",
+                (emoji, data)
+            )
+            self._conn.commit()
             return BytesIO(data)
 
         logger.warning(f"下载 emoji 图片失败（CDN 不可达?）: {emoji}")
         return None
 
 
-# 模块级复用 CachedEmojiSource 实例（带本地磁盘缓存）
-_emoji_source = CachedEmojiSource()
+# emoji source — 惰性初始化（需拿到 cache.db 路径）
+_emoji_source: Optional["CachedEmojiSource"] = None
 
 # 图标文件夹路径
 ICON_DIR = Path(__file__).parent / "icon"
@@ -71,10 +81,16 @@ _TYPE_WIDTHS: Optional[dict] = None
 
 
 def _ensure_static_resources():
-    """首次渲染时初始化预渲染资源"""
-    global _STATIC_HEADER_OVERLAY, _STATIC_FOOTER_OVERLAY, _TYPE_WIDTHS
+    """首次渲染时初始化预渲染资源和 emoji 缓存"""
+    global _STATIC_HEADER_OVERLAY, _STATIC_FOOTER_OVERLAY, _TYPE_WIDTHS, _emoji_source
     if _TYPE_WIDTHS is not None:
         return
+
+    # emoji source（使用 SQLite DB 缓存）
+    if _emoji_source is None:
+        import nonebot_plugin_localstore as store
+        cache_db = store.get_plugin_cache_dir() / "cache.db"
+        _emoji_source = CachedEmojiSource(str(cache_db))
 
     # 类型标签宽度
     tmp = Image.new("RGB", (1, 1))
@@ -571,12 +587,15 @@ def clear_cache():
     _cover_cache.clear()
     _rounded_mask_cache.clear()
     _get_font_path.cache_clear()
-    # 清理 emoji 磁盘缓存
-    import shutil
-    if CachedEmojiSource.CACHE_DIR.exists():
-        shutil.rmtree(CachedEmojiSource.CACHE_DIR)
-        CachedEmojiSource.CACHE_DIR.mkdir(parents=True)
-        logger.info("已清理 emoji 磁盘缓存")
+    # 清理 emoji DB 缓存
+    try:
+        if _emoji_source and hasattr(_emoji_source, '_db_path'):
+            with sqlite3.connect(_emoji_source._db_path) as conn:
+                conn.execute("DELETE FROM emoji_cache")
+                conn.commit()
+            logger.info("已清理 emoji DB 缓存")
+    except Exception:
+        pass
     logger.info("已清理所有渲染缓存")
 
 
@@ -601,12 +620,6 @@ def get_cache_stats() -> dict:
 
 
 # ==================== 帮助图片渲染 ====================
-
-HELP_CACHE_DIR = Path(__file__).parent / "help_cache"
-HELP_CACHE_DIR.mkdir(exist_ok=True)
-
-HELP_USER_CACHE = HELP_CACHE_DIR / "help_user.png"
-HELP_ADMIN_CACHE = HELP_CACHE_DIR / "help_admin.png"
 
 # 颜色方案
 COLOR_PRIMARY = (108, 92, 231)      # 主色 - 紫色
@@ -738,37 +751,34 @@ def render_help_image(is_admin: bool = False) -> bytes:
     return bio.getvalue()
 
 
-def get_help_image(is_admin: bool = False) -> Optional[bytes]:
-    """获取帮助图片（优先从缓存读取）
+async def get_help_image(is_admin: bool = False, api=None) -> Optional[bytes]:
+    """获取帮助图片（优先从数据库缓存读取）
 
     Args:
         is_admin: 是否为管理帮助
+        api: MaimaiAPI 实例
 
     Returns:
         图片字节数据，失败返回 None
     """
-    cache_path = HELP_ADMIN_CACHE if is_admin else HELP_USER_CACHE
-    if cache_path.exists():
-        try:
-            with open(cache_path, "rb") as f:
-                return f.read()
-        except Exception as e:
-            logger.warning(f"读取帮助图片缓存失败: {e}")
+    if api:
+        cached = await api.get_help_image(is_admin)
+        if cached:
+            return cached
     return None
 
 
-async def pre_render_help_images():
-    """预渲染帮助图片并缓存到本地"""
+async def pre_render_help_images(api=None):
+    """预渲染帮助图片并缓存到数据库"""
     logger.info("开始预渲染帮助图片...")
 
     for is_admin in [False, True]:
         try:
             img_data = render_help_image(is_admin=is_admin)
             if img_data:
-                cache_path = HELP_ADMIN_CACHE if is_admin else HELP_USER_CACHE
-                with open(cache_path, "wb") as f:
-                    f.write(img_data)
-                logger.info(f"帮助图片已缓存: {cache_path}")
+                if api:
+                    await api.save_help_image(is_admin, img_data)
+                logger.info(f"帮助图片已缓存到数据库: {'管理' if is_admin else '用户'}")
             else:
                 logger.error(f"渲染帮助图片失败: {'管理' if is_admin else '用户'}")
         except Exception as e:

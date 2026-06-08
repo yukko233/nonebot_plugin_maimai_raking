@@ -1316,7 +1316,7 @@ help_admin_cmd = on_command("wmrk管理帮助", priority=8, block=True)
 @help_cmd.handle()
 async def _(bot: Bot, event: GroupMessageEvent):
     """显示普通用户帮助"""
-    img_data = get_help_image(is_admin=False)
+    img_data = await get_help_image(is_admin=False, api=api)
     if img_data:
         await help_cmd.finish(MessageSegment.image(img_data))
     else:
@@ -1326,7 +1326,7 @@ async def _(bot: Bot, event: GroupMessageEvent):
 @help_admin_cmd.handle()
 async def _(bot: Bot, event: GroupMessageEvent):
     """显示管理帮助"""
-    img_data = get_help_image(is_admin=True)
+    img_data = await get_help_image(is_admin=True, api=api)
     if img_data:
         await help_admin_cmd.finish(MessageSegment.image(img_data))
     else:
@@ -1446,7 +1446,7 @@ async def _():
     logger.info("歌曲数据和别名数据加载完成")
     
     # 预渲染帮助图片
-    await pre_render_help_images()
+    await pre_render_help_images(api=api)
 
 
 @driver.on_bot_connect
