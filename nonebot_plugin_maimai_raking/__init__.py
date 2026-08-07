@@ -6,6 +6,7 @@ nonebot-plugin-maimai-raking
 from nonebot import require, get_driver, on_command, get_plugin_config, get_bots
 from nonebot.plugin import PluginMetadata
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageSegment
+from nonebot.adapters.onebot.v11.exception import ActionFailed
 from nonebot.permission import SUPERUSER
 from nonebot.params import CommandArg
 from nonebot.adapters.onebot.v11.permission import GROUP_ADMIN, GROUP_OWNER
@@ -97,6 +98,7 @@ async def update_group_nicknames(bot: Bot, group_id: str):
         logger.info(f"开始更新群 {group_id} 的 {len(users)} 个用户昵称")
         success_count = 0
         removed_count = 0
+        missing_users = []  # 判定为“成员不存在”的用户，先收集再统一清理
         
         for qq in users:
             try:
@@ -112,16 +114,18 @@ async def update_group_nicknames(bot: Bot, group_id: str):
                 group_nickname_cache[cache_key] = nickname
                 success_count += 1
             except Exception as e:
-                # 检查错误是否是成员不存在
-                error_str = str(e)
-                if "成员不存在" in error_str or "retcode=1200" in error_str:
-                    logger.warning(f"用户 {qq} 在群 {group_id} 不存在，自动清理")
-                    await db.remove_invalid_user_from_group(qq, group_id)
-                    # 同时清理缓存
-                    cache_key = f"{group_id}_{qq}"
-                    if cache_key in group_nickname_cache:
-                        del group_nickname_cache[cache_key]
-                    removed_count += 1
+                # 只有明确是“成员不存在”（ActionFailed 且 retcode=1200）时才视为退群，
+                # 网络/连接类异常（如 WS 未连接、请求超时、API 不可用）不能作为删除依据。
+                is_member_not_found = (
+                    isinstance(e, ActionFailed)
+                    and (
+                        e.info.get("retcode") == 1200
+                        or "成员不存在" in str(e.info.get("message", ""))
+                    )
+                )
+                if is_member_not_found:
+                    logger.warning(f"用户 {qq} 在群 {group_id} 不存在，加入待清理列表")
+                    missing_users.append(qq)
                 else:
                     logger.warning(f"更新群 {group_id} 中用户 {qq} 的昵称失败: {e}")
                     # 如果获取群成员信息失败，尝试获取QQ昵称作为备用
@@ -133,6 +137,23 @@ async def update_group_nicknames(bot: Bot, group_id: str):
                         success_count += 1
                     except Exception as e2:
                         logger.warning(f"获取QQ {qq} 昵称也失败: {e2}")
+        
+        # 群级保护：如果群里所有用户都被判定为“不存在”（成功 0 个），
+        # 大概率是机器人离线/账号异常/不在群等系统性问题，而不是所有用户真的退群了。
+        # 此时跳过清理，避免把整群玩家的成绩数据误删。
+        if missing_users and len(missing_users) == len(users):
+            logger.warning(
+                f"群 {group_id} 的全部 {len(users)} 个用户均被判定为不存在，"
+                f"疑似机器人离线或账号异常，跳过自动清理，请确认连接状态"
+            )
+        else:
+            for qq in missing_users:
+                await db.remove_invalid_user_from_group(qq, group_id)
+                # 同时清理缓存
+                cache_key = f"{group_id}_{qq}"
+                if cache_key in group_nickname_cache:
+                    del group_nickname_cache[cache_key]
+                removed_count += 1
         
         logger.info(f"群 {group_id} 昵称更新完成，成功: {success_count}/{len(users)}，清理: {removed_count}")
     except Exception as e:

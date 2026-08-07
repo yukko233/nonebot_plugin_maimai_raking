@@ -389,6 +389,13 @@ class Database:
         """
         cleaned_count = 0
 
+        # 安全保护：当前群组列表为空时（例如 WS 未连接或获取群列表失败），
+        # 无法确认机器人实际所在的群组，此时清理会把所有群组都误判为已退出，
+        # 进而清空所有玩家的成绩数据，因此直接跳过。
+        if not current_groups:
+            logger.warning("当前群组列表为空，跳过清理已退出群组数据（避免误删玩家数据）")
+            return 0
+
         # 先获取所有群组列表
         all_groups = await self.get_all_groups()
         left_groups = [gid for gid in all_groups if gid not in current_groups]
