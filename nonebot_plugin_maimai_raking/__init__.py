@@ -121,6 +121,20 @@ def _oauth_error_message(error: OAuthError) -> str:
         return "❌ 水鱼 OAuth 换票过于频繁，请稍后再试。"
     return "❌ 水鱼 OAuth 请求失败，请稍后重试。"
 
+
+async def _delete_sent_message(bot: Bot, send_result):
+    """认证成功后撤回授权链接消息；撤回失败不影响后续业务。"""
+    if not isinstance(send_result, dict):
+        return
+    message_id = send_result.get("message_id")
+    if message_id is None:
+        return
+    try:
+        await bot.delete_msg(message_id=int(message_id))
+    except Exception as e:
+        logger.warning(f"撤回 OAuth 授权消息失败: {e}")
+
+
 # 群昵称缓存
 group_nickname_cache: dict = {}
 
@@ -223,7 +237,7 @@ bind_maimai_account = on_command(
 
 
 @bind_maimai_account.handle()
-async def _(event):
+async def _(bot: Bot, event):
     """使用 Device Authorization 将当前 QQ 绑定到水鱼账号。"""
     user_id = str(event.user_id)
     try:
@@ -232,8 +246,9 @@ async def _(event):
         await bind_maimai_account.finish(_oauth_error_message(e))
         return
 
-    await bind_maimai_account.send(
-        _oauth_binding_message(
+    auth_message = await bind_maimai_account.send(
+        MessageSegment.reply(event.message_id)
+        + _oauth_binding_message(
             user_id,
             device,
             "授权完成后 Bot 会自动继续，等待期间请不要重复发送绑定命令。",
@@ -242,6 +257,7 @@ async def _(event):
 
     try:
         await oauth.poll_device_authorization(user_id, device)
+        await _delete_sent_message(bot, auth_message)
     except OAuthError as e:
         await bind_maimai_account.finish(_oauth_error_message(e))
         return
@@ -668,8 +684,9 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
             logger.warning(f"为用户 {qq} 创建 OAuth 授权链接失败: {e.code or 'oauth_error'}")
             await join_ranking.finish(_oauth_error_message(e))
             return
-        await join_ranking.send(
-            _oauth_binding_message(
+        auth_message = await join_ranking.send(
+            MessageSegment.reply(event.message_id)
+            + _oauth_binding_message(
                 qq,
                 device,
                 "授权完成后 Bot 会自动继续加入排行榜，请耐心等待。",
@@ -678,6 +695,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
         try:
             # 设备码授权成功后继续当前命令，无需用户再次发送“加入排行榜”。
             await oauth.poll_device_authorization(qq, device)
+            await _delete_sent_message(bot, auth_message)
             records = await api.get_player_records(qq)
         except OAuthError as e:
             logger.warning(f"用户 {qq} 完成 OAuth 授权后获取成绩失败: {e.code or 'oauth_error'}")
