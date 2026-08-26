@@ -668,14 +668,25 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
             logger.warning(f"为用户 {qq} 创建 OAuth 授权链接失败: {e.code or 'oauth_error'}")
             await join_ranking.finish(_oauth_error_message(e))
             return
-        await join_ranking.finish(
+        await join_ranking.send(
             _oauth_binding_message(
                 qq,
                 device,
-                "授权完成后请重新发送「加入排行榜」。",
+                "授权完成后 Bot 会自动继续加入排行榜，请耐心等待。",
             )
         )
-        return
+        try:
+            # 设备码授权成功后继续当前命令，无需用户再次发送“加入排行榜”。
+            await oauth.poll_device_authorization(qq, device)
+            records = await api.get_player_records(qq)
+        except OAuthError as e:
+            logger.warning(f"用户 {qq} 完成 OAuth 授权后获取成绩失败: {e.code or 'oauth_error'}")
+            await join_ranking.finish(_oauth_error_message(e))
+            return
+        except Exception as e:
+            logger.error(f"用户 {qq} 完成 OAuth 授权后加入排行榜失败: {e}")
+            await join_ranking.finish("❌ 授权成功但获取成绩失败，请稍后重试！")
+            return
     except OAuthError as e:
         logger.warning(f"获取用户 {qq} 的 OAuth 成绩失败: {e.code or 'oauth_error'}")
         await join_ranking.finish(_oauth_error_message(e))
