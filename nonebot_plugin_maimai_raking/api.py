@@ -1,8 +1,10 @@
 """API 模块 - 对接水鱼 API 和别名 API"""
+import asyncio
 import aiosqlite
 import httpx
 import json
 import sqlite3
+import unicodedata
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 from nonebot.log import logger
@@ -24,6 +26,9 @@ class MaimaiAPI:
         self.oauth = oauth
         self.base_url = "https://www.diving-fish.com/api/maimaidxprober"
         self.alias_url = "https://www.yuzuchan.moe/api/maimaidx/maimaidxalias"
+        self.alias_lxns_url = "https://maimai.lxns.net/api/v0/maimai/alias/list"
+        self.alias_dxrating_url = "https://miruku.dxrating.net/api/v1/aliases"
+        self.alias_cache_version = 2
 
         # 缓存数据
         self.music_data: List[dict] = []
@@ -101,9 +106,183 @@ class MaimaiAPI:
         except Exception as e:
             logger.error(f"加载歌曲数据时出错: {e}")
 
+    @staticmethod
+    def _normalize_title(title: Any) -> str:
+        """规范化歌名，用于匹配 DXRating 返回的歌名。"""
+        if not isinstance(title, str):
+            return ""
+        normalized = unicodedata.normalize("NFKC", title).casefold().strip()
+        return "".join(char for char in normalized if not char.isspace())
+
+    @staticmethod
+    def _as_alias_entries(data: Any) -> List[dict]:
+        """从不同数据源的响应中提取别名条目。"""
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if not isinstance(data, dict):
+            return []
+        for key in ("content", "aliases", "data"):
+            entries = data.get(key)
+            if isinstance(entries, list):
+                return [item for item in entries if isinstance(item, dict)]
+        return []
+
+    @staticmethod
+    def _add_aliases(alias_map: Dict[int, List[str]], song_id: Any, aliases: Any) -> int:
+        """将一首歌的别名合并到统一映射中。"""
+        try:
+            song_id = int(song_id)
+        except (TypeError, ValueError):
+            return 0
+        if not isinstance(aliases, list):
+            return 0
+
+        target = alias_map.setdefault(song_id, [])
+        existing = {alias.casefold() for alias in target if isinstance(alias, str)}
+        added_count = 0
+        for alias in aliases:
+            if not isinstance(alias, str):
+                continue
+            alias = alias.strip()
+            if not alias or alias.casefold() in existing:
+                continue
+            target.append(alias)
+            existing.add(alias.casefold())
+            added_count += 1
+        return added_count
+
+    def _build_song_title_map(self) -> Dict[str, List[int]]:
+        """建立规范化歌名到歌曲 ID 的映射。"""
+        title_map: Dict[str, List[int]] = {}
+        for song in self.music_data:
+            try:
+                song_id = int(song["id"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            title = self._normalize_title(song.get("title"))
+            if title:
+                title_map.setdefault(title, []).append(song_id)
+        return title_map
+
+    def _merge_yuzu_aliases(self, data: Any, alias_map: Dict[int, List[str]]) -> int:
+        count = 0
+        for item in self._as_alias_entries(data):
+            song_id = item.get("SongID", item.get("song_id"))
+            aliases = item.get("Alias", item.get("aliases"))
+            count += self._add_aliases(alias_map, song_id, aliases)
+        return count
+
+    def _merge_lxns_aliases(self, data: Any, alias_map: Dict[int, List[str]]) -> int:
+        count = 0
+        for item in self._as_alias_entries(data):
+            count += self._add_aliases(
+                alias_map, item.get("song_id"), item.get("aliases")
+            )
+        return count
+
+    def _merge_dxrating_aliases(self, data: Any, alias_map: Dict[int, List[str]]) -> int:
+        """合并 DXRating 别名；该接口的 song_id 当前实际返回歌曲标题。"""
+        title_map = self._build_song_title_map()
+        known_ids = {
+            int(song["id"])
+            for song in self.music_data
+            if isinstance(song, dict) and str(song.get("id", "")).isdigit()
+        }
+        count = 0
+        for item in self._as_alias_entries(data):
+            raw_song_id = item.get("song_id", item.get("SongID"))
+            song_ids: List[int] = []
+            if isinstance(raw_song_id, (int, float)) and not isinstance(raw_song_id, bool):
+                if int(raw_song_id) in known_ids:
+                    song_ids = [int(raw_song_id)]
+            else:
+                raw_song_id = str(raw_song_id or "").strip()
+                if raw_song_id.isdigit() and int(raw_song_id) in known_ids:
+                    song_ids = [int(raw_song_id)]
+                else:
+                    song_ids = title_map.get(self._normalize_title(raw_song_id), [])
+
+            for song_id in song_ids:
+                count += self._add_aliases(
+                    alias_map, song_id, [item.get("name")]
+                )
+        return count
+
+    async def _fetch_alias_sources(self) -> Dict[str, Any]:
+        """并发获取三个别名数据源，单个数据源失败不影响其它来源。"""
+        sources = {
+            "柚子": self.alias_url,
+            "落雪": self.alias_lxns_url,
+            "DXRating": self.alias_dxrating_url,
+        }
+
+        async def fetch(name: str, url: str):
+            try:
+                response = await self.client.get(url)
+                if response.status_code != 200:
+                    raise RuntimeError(f"HTTP {response.status_code}")
+                return name, response.json(), None
+            except Exception as e:
+                return name, None, e
+
+        results = await asyncio.gather(
+            *(fetch(name, url) for name, url in sources.items())
+        )
+        return {name: (data, error) for name, data, error in results}
+
+    async def _load_alias_data_from_network(self) -> List[dict]:
+        """从三源合并别名数据，统一返回现有缓存格式。"""
+        if not self.music_data:
+            await self.load_music_data()
+
+        results = await self._fetch_alias_sources()
+        alias_map: Dict[int, List[str]] = {}
+        merge_handlers = {
+            "柚子": self._merge_yuzu_aliases,
+            "落雪": self._merge_lxns_aliases,
+            "DXRating": self._merge_dxrating_aliases,
+        }
+        success_count = 0
+        for name, (data, error) in results.items():
+            if error is not None:
+                logger.warning(f"获取{name}别名数据失败: {error}")
+                continue
+            try:
+                alias_count = merge_handlers[name](data, alias_map)
+                success_count += 1
+                logger.info(f"{name}别名数据加载完成，合并 {alias_count} 条别名")
+            except Exception as e:
+                logger.warning(f"处理{name}别名数据失败: {e}")
+
+        if not success_count or not alias_map:
+            return []
+        return [
+            {"SongID": song_id, "Alias": aliases}
+            for song_id, aliases in alias_map.items()
+            if aliases
+        ]
+
+    async def _save_alias_cache(self):
+        """保存三源合并后的别名缓存。"""
+        from datetime import datetime
+
+        cache_payload = {
+            "version": self.alias_cache_version,
+            "data": self.alias_data,
+        }
+        data_json = json.dumps(cache_payload, ensure_ascii=False)
+        updated_at = datetime.now().isoformat()
+        async with aiosqlite.connect(self.cache_db_file) as db:
+            await db.execute("DELETE FROM alias_cache")
+            await db.execute(
+                "INSERT INTO alias_cache (data, updated_at) VALUES (?, ?)",
+                (data_json, updated_at),
+            )
+            await db.commit()
+
     async def load_alias_data(self):
-        """加载别名数据（优先从数据库缓存加载）"""
-        # 1. 尝试从数据库缓存加载
+        """加载别名数据（优先从数据库缓存加载）。"""
+        cached_alias_data = None
         try:
             async with aiosqlite.connect(self.cache_db_file) as db:
                 db.row_factory = sqlite3.Row
@@ -112,99 +291,53 @@ class MaimaiAPI:
                 )
                 row = await cursor.fetchone()
                 if row:
-                    self.alias_data = json.loads(row["data"])
-                    logger.info(f"从数据库缓存加载 {len(self.alias_data)} 条别名数据")
-                    return
+                    cached = json.loads(row["data"])
+                    if (
+                        isinstance(cached, dict)
+                        and cached.get("version") == self.alias_cache_version
+                        and isinstance(cached.get("data"), list)
+                    ):
+                        self.alias_data = cached["data"]
+                        logger.info(f"从数据库缓存加载 {len(self.alias_data)} 条别名数据")
+                        return
+                    if isinstance(cached, list):
+                        cached_alias_data = cached
+                        self.alias_data = cached
+                        logger.info("检测到旧版别名缓存，将更新为三源合并数据")
         except Exception as e:
             logger.warning(f"加载数据库别名缓存失败: {e}，将从API获取")
 
-        # 2. 从API加载
         try:
-            response = await self.client.get(self.alias_url)
-
-            if response.status_code == 200:
-                data = response.json()
-
-                # 处理不同的数据格式
-                if isinstance(data, list):
-                    self.alias_data = data
-                elif isinstance(data, dict):
-                    if "content" in data:
-                        self.alias_data = data["content"]
-                    else:
-                        self.alias_data = list(data.values()) if data else []
-                else:
-                    logger.warning(f"别名数据格式不正确: {type(data)}")
-                    self.alias_data = []
-
-                # 保存到数据库缓存
-                if self.alias_data:
-                    try:
-                        async with aiosqlite.connect(self.cache_db_file) as db:
-                            db.row_factory = sqlite3.Row
-                            from datetime import datetime
-                            data_json = json.dumps(self.alias_data, ensure_ascii=False)
-                            updated_at = datetime.now().isoformat()
-
-                            await db.execute("DELETE FROM alias_cache")
-                            await db.execute(
-                                "INSERT INTO alias_cache (data, updated_at) VALUES (?, ?)",
-                                (data_json, updated_at)
-                            )
-                            await db.commit()
-                            logger.info(f"成功加载并缓存 {len(self.alias_data)} 条别名数据到数据库")
-                    except Exception as e:
-                        logger.error(f"保存别名缓存到数据库失败: {e}")
-                        logger.info(f"成功加载 {len(self.alias_data)} 条别名数据（未缓存）")
-            else:
-                logger.error(f"加载别名数据失败: {response.status_code}")
+            merged_alias_data = await self._load_alias_data_from_network()
+            if merged_alias_data:
+                self.alias_data = merged_alias_data
+                await self._save_alias_cache()
+                logger.info(f"成功加载并缓存 {len(self.alias_data)} 条三源别名数据")
+            elif cached_alias_data is None:
                 self.alias_data = []
         except Exception as e:
-            logger.error(f"加载别名数据时出错: {e}")
-            self.alias_data = []
+            logger.error(f"加载三源别名数据时出错: {e}")
+            if cached_alias_data is None:
+                self.alias_data = []
 
     async def load_alias_data_force(self):
-        """强制从网络重新加载别名数据（用于定时更新）"""
+        """强制从网络重新加载三源别名数据（用于定时更新）。"""
         try:
-            logger.info("正在从网络强制更新别名数据...")
-            response = await self.client.get(self.alias_url)
+            logger.info("正在从网络强制更新三源别名数据...")
+            merged_alias_data = await self._load_alias_data_from_network()
+            if not merged_alias_data:
+                logger.warning("三源别名数据均未加载到有效内容，保留现有缓存")
+                return
 
-            if response.status_code == 200:
-                data = response.json()
-
-                if isinstance(data, list):
-                    self.alias_data = data
-                elif isinstance(data, dict):
-                    if "content" in data:
-                        self.alias_data = data["content"]
-                    else:
-                        self.alias_data = list(data.values()) if data else []
-                else:
-                    logger.warning(f"别名数据格式不正确: {type(data)}")
-                    self.alias_data = []
-
-                if self.alias_data:
-                    try:
-                        async with aiosqlite.connect(self.cache_db_file) as db:
-                            db.row_factory = sqlite3.Row
-                            from datetime import datetime
-                            data_json = json.dumps(self.alias_data, ensure_ascii=False)
-                            updated_at = datetime.now().isoformat()
-
-                            await db.execute("DELETE FROM alias_cache")
-                            await db.execute(
-                                "INSERT INTO alias_cache (data, updated_at) VALUES (?, ?)",
-                                (data_json, updated_at)
-                            )
-                            await db.commit()
-                            logger.info(f"强制更新并缓存 {len(self.alias_data)} 条别名数据到数据库")
-                    except Exception as e:
-                        logger.error(f"保存别名缓存到数据库失败: {e}")
-                        logger.info(f"强制更新 {len(self.alias_data)} 条别名数据（未缓存）")
-            else:
-                logger.error(f"强制更新别名数据失败: {response.status_code}")
+            self.alias_data = merged_alias_data
+            try:
+                await self._save_alias_cache()
+                logger.info(f"强制更新并缓存 {len(self.alias_data)} 条三源别名数据")
+            except Exception as e:
+                logger.error(f"保存三源别名缓存失败: {e}")
+                logger.info(f"强制更新 {len(self.alias_data)} 条三源别名数据（未缓存）")
         except Exception as e:
-            logger.error(f"强制更新别名数据时出错: {e}")
+            logger.error(f"强制更新三源别名数据时出错: {e}")
 
     # ==================== 自定义别名处理 ====================
 

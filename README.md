@@ -12,7 +12,7 @@
 
 ### 🔄 自动更新
 - 每天凌晨 **0:00** 自动更新歌曲数据
-- 每天凌晨 **0:05** 自动更新歌曲别名库
+- 每天凌晨 **0:05** 自动从柚子、落雪和 DXRating 合并更新歌曲别名库
 - 每天凌晨 **0:10** 自动更新所有启用群的用户昵称
 - 每天凌晨 **0:15** 自动更新所有用户的成绩数据
 - 用户加入排行榜时自动刷新该群所有成员的昵称
@@ -370,6 +370,7 @@ Bot: ✅ 已成功为用户 123456789 加入群 987654321 的排行榜！
 - [水鱼查分器](https://www.diving-fish.com/maimaidx/prober/)
 - [落雪咖啡屋查分器](https://maimai.lxns.net/)
 - [舞萌 DX 别名库](https://www.yuzuchan.moe/mai/alias)
+- [DXRating](https://dxrating.net/)
 - [OneBot 协议](https://onebot.dev/)
 
 ## 👨‍💻 致谢
@@ -377,6 +378,7 @@ Bot: ✅ 已成功为用户 123456789 加入群 987654321 的排行榜！
 - 感谢 [水鱼查分器](https://www.diving-fish.com/maimaidx/prober/) 提供的成绩 API 支持
 - 感谢 [落雪咖啡屋](https://maimai.lxns.net/) 提供的 舞萌美术资源
 - 感谢 [柚子舞萌别名库](https://www.yuzuchan.moe/api/maimaidx/maimaidxalias) 提供的别名数据
+- 感谢 [DXRating](https://dxrating.net/) 提供的社区别名数据
 - 感谢 NoneBot2 社区的支持
 
 ---
