@@ -24,6 +24,14 @@ require("nonebot_plugin_localstore")
 from .config import Config
 from .database import Database
 from .api import MaimaiAPI
+from .oauth import (
+    OAuthConsentRequired,
+    OAuthError,
+    OAuthManager,
+    OAuthNotConfigured,
+    OAuthQuotaExceeded,
+    OAuthRateLimited,
+)
 from .render import render_ranking_image, clear_cover_memory_cache, get_help_image, pre_render_help_images
 
 __plugin_meta__ = PluginMetadata(
@@ -32,7 +40,6 @@ __plugin_meta__ = PluginMetadata(
     usage=""" 
     超管命令：
     - 刷新排行榜
-    - 重置刷新次数 <QQ号/@用户>
     - 更新歌曲数据
     - 清理缓存
     - 清理数据库
@@ -46,6 +53,8 @@ __plugin_meta__ = PluginMetadata(
     - 退出排行榜 <QQ号/@用户>
     
     用户命令：
+    - 绑定水鱼账号
+    - 解绑水鱼账号
     - 加入排行榜 [QQ号/@用户]
     - 退出排行榜 [QQ号/@用户]
     - 刷新成绩
@@ -68,7 +77,49 @@ config = get_plugin_config(Config)
 
 # 初始化数据库和 API
 db = Database()
-api = MaimaiAPI(config.maimai_developer_token)
+oauth = OAuthManager(
+    db=db,
+    client_id=config.maimai_oauth_client_id,
+    client_secret=config.maimai_oauth_client_secret,
+    scope=config.maimai_oauth_scope,
+    authorization_server=config.maimai_oauth_base_url,
+)
+api = MaimaiAPI(oauth)
+
+
+def _oauth_bind_prompt() -> str:
+    return (
+        "请先绑定水鱼账号：发送「绑定水鱼账号」获取授权链接。\n"
+        "授权完成后再重试本命令。"
+    )
+
+
+def _oauth_binding_message(qq: str, device: dict, retry_hint: str) -> str:
+    verification_uri = (
+        device.get("verification_uri_complete")
+        or device.get("verification_uri")
+        or "https://auth.diving-fish.com/device"
+    )
+    user_code = device.get("user_code", "")
+    return (
+        "请在浏览器中打开下面的链接完成水鱼账号授权：\n"
+        f"{verification_uri}\n"
+        f"设备码：{user_code}\n"
+        f"请确认授权页显示的绑定身份为：{oauth.binding_label(str(qq))}\n"
+        f"{retry_hint}"
+    )
+
+
+def _oauth_error_message(error: OAuthError) -> str:
+    if isinstance(error, OAuthNotConfigured):
+        return "❌ 插件尚未配置水鱼 OAuth 应用，请联系管理员设置 client_id 和 client_secret。"
+    if isinstance(error, OAuthConsentRequired):
+        return f"❌ 当前水鱼授权未完成，需要重新授权。\n{_oauth_bind_prompt()}"
+    if isinstance(error, OAuthQuotaExceeded):
+        return "❌ 已达到水鱼 OAuth 今日调用上限，请等待下一个 UTC 自然日再试。"
+    if isinstance(error, OAuthRateLimited):
+        return "❌ 水鱼 OAuth 换票过于频繁，请稍后再试。"
+    return "❌ 水鱼 OAuth 请求失败，请稍后重试。"
 
 # 群昵称缓存
 group_nickname_cache: dict = {}
@@ -160,6 +211,66 @@ async def update_group_nicknames(bot: Bot, group_id: str):
         logger.error(f"更新群 {group_id} 昵称时发生未预期的错误: {e}")
         raise
 
+
+# ==================== OAuth 授权命令 ====================
+
+bind_maimai_account = on_command(
+    "绑定水鱼账号",
+    aliases={"水鱼授权", "舞萌授权"},
+    priority=5,
+    block=True,
+)
+
+
+@bind_maimai_account.handle()
+async def _(event):
+    """使用 Device Authorization 将当前 QQ 绑定到水鱼账号。"""
+    user_id = str(event.user_id)
+    try:
+        device = await oauth.start_device_authorization(user_id)
+    except OAuthError as e:
+        await bind_maimai_account.finish(_oauth_error_message(e))
+        return
+
+    await bind_maimai_account.send(
+        _oauth_binding_message(
+            user_id,
+            device,
+            "授权完成后 Bot 会自动继续，等待期间请不要重复发送绑定命令。",
+        )
+    )
+
+    try:
+        await oauth.poll_device_authorization(user_id, device)
+    except OAuthError as e:
+        await bind_maimai_account.finish(_oauth_error_message(e))
+        return
+
+    await bind_maimai_account.finish(
+        "✅ 水鱼账号绑定成功！现在可以发送「加入排行榜」或「刷新成绩」。"
+    )
+
+
+unbind_maimai_account = on_command(
+    "解绑水鱼账号",
+    aliases={"取消水鱼授权"},
+    priority=5,
+    block=True,
+)
+
+
+@unbind_maimai_account.handle()
+async def _(event):
+    """撤销当前 QQ 的水鱼 OAuth 授权。"""
+    user_id = str(event.user_id)
+    try:
+        await oauth.revoke_user(user_id)
+    except Exception as e:
+        logger.error(f"解绑用户 {user_id} 的水鱼账号失败: {e}")
+        await unbind_maimai_account.finish("❌ 解绑失败，请稍后重试！")
+        return
+    await unbind_maimai_account.finish("✅ 已清除本地水鱼授权并请求撤销远端 Token。")
+
 # ==================== 管理员命令 ====================
 
 enable_ranking = on_command(
@@ -226,6 +337,9 @@ async def _(bot: Bot, event: GroupMessageEvent):
             else:
                 fail_count += 1
                 logger.warning(f"获取用户 {qq} 的成绩失败")
+        except OAuthError as e:
+            fail_count += 1
+            logger.warning(f"获取用户 {qq} 的 OAuth 成绩失败: {e.code or 'oauth_error'}")
         except Exception as e:
             fail_count += 1
             logger.error(f"获取用户 {qq} 的成绩时出错: {e}")
@@ -243,13 +357,6 @@ refresh_nicknames = on_command(
 refresh_nickname = on_command(
     "刷新昵称",
     permission=SUPERUSER | GROUP_ADMIN | GROUP_OWNER,
-    priority=5,
-    block=True,
-)
-
-reset_refresh_count = on_command(
-    "重置刷新次数",
-    permission=SUPERUSER,
     priority=5,
     block=True,
 )
@@ -309,54 +416,6 @@ async def _(bot: Bot, event: GroupMessageEvent):
         logger.error(f"刷新群昵称失败: {e}")
         # 使用 send 而不是 finish，避免 FinishedException
         await refresh_nickname.send("❌ 刷新群昵称失败，请稍后重试！")
-
-
-@reset_refresh_count.handle()
-async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
-    """重置用户刷新次数"""
-    group_id = str(event.group_id)
-    user_id = str(event.user_id)
-    
-    if not await db.is_group_enabled(group_id):
-        return
-    
-    # 解析参数：支持QQ号或@用户
-    arg_text = args.extract_plain_text().strip()
-    target_qq = None
-    
-    # 检查是否有@用户
-    if event.message:
-        for segment in event.message:
-            if segment.type == "at":
-                target_qq = str(segment.data.get("qq", ""))
-                break
-    
-    # 确定目标QQ号
-    if target_qq:
-        # 有@用户，使用@的用户
-        qq = target_qq
-    elif arg_text:
-        # 有文本参数，使用文本参数
-        qq = arg_text
-    else:
-        await reset_refresh_count.finish("请指定要重置的用户！\n使用方法：\n• 重置刷新次数 <QQ号>\n• 重置刷新次数 @用户")
-        return
-    
-    # 检查用户是否在排行榜中
-    if not await db.is_user_in_group(qq, group_id):
-        await reset_refresh_count.finish(f"用户 {qq} 未加入本群排行榜！")
-        return
-    
-    try:
-        # 重置今日刷新次数
-        today = datetime.now().strftime("%Y-%m-%d")
-        await db.reset_daily_refresh_count(qq, today)
-        
-        await reset_refresh_count.finish(f"✅ 已重置用户 {qq} 的今日刷新次数！")
-        
-    except Exception as e:
-        logger.error(f"重置用户 {qq} 的刷新次数失败: {e}")
-        await reset_refresh_count.finish("❌ 重置失败，请稍后重试！")
 
 
 @update_music_data.handle()
@@ -430,23 +489,8 @@ async def _(bot: Bot, event: GroupMessageEvent):
         await refresh_records.finish("你还未加入本群排行榜！")
         return
     
-    # 检查刷新频率限制（一个自然日内最多2次）
+    # 保留刷新日志，供定时任务判断当天是否已经手动刷新过。
     today = datetime.now().strftime("%Y-%m-%d")
-    last_update_time = await db.get_last_update_time(user_id)
-    
-    if last_update_time:
-        last_update_date = last_update_time.split("T")[0]  # 提取日期部分
-        if last_update_date == today:
-            # 检查今日刷新次数
-            refresh_count = await db.get_daily_refresh_count(user_id, today)
-            if refresh_count >= 2:
-                await refresh_records.finish(
-                    "❌ 今日刷新次数已达上限！\n"
-                    "每个自然日最多可刷新2次成绩\n"
-                    "请明天再试，或联系管理员"
-                )
-                return
-    
     await refresh_records.send("正在刷新你的成绩数据，请稍候...")
     
     try:
@@ -455,10 +499,7 @@ async def _(bot: Bot, event: GroupMessageEvent):
         if not records:
             await refresh_records.finish(
                 "❌ 无法获取你的成绩数据！\n"
-                "请确保：\n"
-                "1. 已在水鱼查分器绑定此 QQ 号\n"
-                "2. 已关闭隐私设置（允许第三方查询）\n"
-                "3. 网络连接正常"
+                "请确认已同意水鱼查分器用户协议，且网络连接正常。"
             )
             return
         
@@ -472,17 +513,16 @@ async def _(bot: Bot, event: GroupMessageEvent):
         nickname = records.get("nickname", "未知")
         rating = records.get("rating", 0)
         
-        # 计算剩余刷新次数
-        remaining_count = 2 - await db.get_daily_refresh_count(user_id, today)
-        
         # 发送成功消息
         await refresh_records.send(
             f"✅ 成绩刷新完成！\n"
             f"昵称: {nickname}\n"
-            f"Rating: {rating}\n"
-            f"今日剩余刷新次数: {remaining_count}/2"
+            f"Rating: {rating}"
         )
         
+    except OAuthError as e:
+        logger.warning(f"获取用户 {user_id} 的 OAuth 成绩失败: {e.code or 'oauth_error'}")
+        await refresh_records.finish(_oauth_error_message(e))
     except Exception as e:
         logger.error(f"刷新用户 {user_id} 的成绩时出错: {e}")
         # 使用 send 而不是 finish，避免 FinishedException
@@ -621,6 +661,25 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     # 尝试获取用户数据验证
     try:
         records = await api.get_player_records(qq)
+    except OAuthConsentRequired:
+        try:
+            device = await oauth.start_device_authorization(qq)
+        except OAuthError as e:
+            logger.warning(f"为用户 {qq} 创建 OAuth 授权链接失败: {e.code or 'oauth_error'}")
+            await join_ranking.finish(_oauth_error_message(e))
+            return
+        await join_ranking.finish(
+            _oauth_binding_message(
+                qq,
+                device,
+                "授权完成后请重新发送「加入排行榜」。",
+            )
+        )
+        return
+    except OAuthError as e:
+        logger.warning(f"获取用户 {qq} 的 OAuth 成绩失败: {e.code or 'oauth_error'}")
+        await join_ranking.finish(_oauth_error_message(e))
+        return
     except Exception as e:
         logger.error(f"获取用户 {qq} 的成绩时出错: {e}")
         await join_ranking.finish("❌ 加入排行榜失败，请稍后重试！")
@@ -629,10 +688,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     if not records:
         await join_ranking.finish(
             "❌ 无法获取你的成绩数据！\n"
-            "请确保：\n"
-            "1. 已在水鱼查分器绑定此 QQ 号\n"
-            "2. 已关闭隐私设置（允许第三方查询）\n"
-            "3. QQ 号输入正确"
+            "请确认已完成水鱼账号授权、同意查分器用户协议，且 QQ 号输入正确。"
         )
         return
     
@@ -1378,6 +1434,9 @@ async def auto_update_records():
                 success_count += 1
             else:
                 fail_count += 1
+        except OAuthError as e:
+            fail_count += 1
+            logger.warning(f"自动更新用户 {qq} 的 OAuth 成绩失败: {e.code or 'oauth_error'}")
         except Exception as e:
             fail_count += 1
             logger.error(f"自动更新用户 {qq} 的成绩时出错: {e}")
@@ -1468,6 +1527,19 @@ async def _():
     
     # 预渲染帮助图片
     await pre_render_help_images(api=api)
+
+    if not oauth.is_configured:
+        logger.warning(
+            "未配置水鱼 OAuth 应用，完整成绩查询不可用；"
+            "请设置 MAIMAI_OAUTH_CLIENT_ID 和 MAIMAI_OAUTH_CLIENT_SECRET"
+        )
+
+
+@driver.on_shutdown
+async def _shutdown():
+    """插件关闭时释放 HTTP 客户端。"""
+    await api.close()
+    await oauth.close()
 
 
 @driver.on_bot_connect

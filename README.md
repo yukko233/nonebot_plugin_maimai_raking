@@ -45,8 +45,13 @@ nb plugin install nonebot-plugin-maimai-raking
 在 `.env` 文件中添加以下配置：
 
 ```env
-# 水鱼查分器 Developer Token（必填）
-MAIMAI_DEVELOPER_TOKEN=your_developer_token_here
+# 水鱼 OAuth 应用配置（必填）
+MAIMAI_OAUTH_CLIENT_ID=your_client_id
+MAIMAI_OAUTH_CLIENT_SECRET=your_client_secret
+# 只读舞萌成绩权限
+MAIMAI_OAUTH_SCOPE=prober.records.read
+# 可选，默认值如下
+MAIMAI_OAUTH_BASE_URL=https://auth.diving-fish.com
 
 # 数据存储路径（可选，默认使用 nonebot-plugin-localstore 管理的插件数据目录）
 MAIMAI_DATA_PATH=data/maimai_raking
@@ -55,12 +60,14 @@ MAIMAI_DATA_PATH=data/maimai_raking
 MAIMAI_CACHE_PATH=data/maimai_cache
 ```
 
-### 获取 Developer Token
+### 获取 OAuth 应用凭据
 
-1. 访问 [水鱼查分器](https://www.diving-fish.com/maimaidx/prober/)
-2. 登录你的账号
-3. 进入"编辑个人资料"页面
-4. 在"需要查分器中的玩家数据用于其他应用程序开发？请点击这里~"中申请 Developer Token
+1. 访问 [水鱼 OAuth 开发者控制台](https://auth.diving-fish.com/console)
+2. 登记应用并申请 `prober.records.read` Scope
+3. 生成 `client_id` 和 `client_secret`
+4. 将 `client_secret` 仅保存到 Bot 服务端的环境变量中，不要提交到 Git
+
+已有排行榜用户不需要重新录入 QQ：插件会先按 `ref` 摘要尝试换票，并兼容迁移期的 `qq` subject；如果服务端返回 `consent_required`，再让用户执行 `绑定水鱼账号`。
 
 ## 📖 使用方法
 
@@ -71,7 +78,6 @@ MAIMAI_CACHE_PATH=data/maimai_cache
 | 命令 | 说明 |
 |------|------|
 | `刷新排行榜` | 手动刷新当前群所有成员的成绩数据 |
-| `重置刷新次数 <QQ号/@用户>` | 重置指定用户的今日刷新次数 |
 | `更新歌曲数据` | 手动更新水鱼歌曲数据（歌曲名称、ID、难度等信息）|
 | `清理数据库` | 清理Bot已退出群组的数据 |
 | `加入排行榜 <QQ号/@用户> [群号]` | 跨群加入排行榜 |
@@ -96,9 +102,11 @@ MAIMAI_CACHE_PATH=data/maimai_cache
 
 | 命令 | 说明 |
 |------|------|
+| `绑定水鱼账号` | 通过 Device Authorization 授权水鱼账号 |
+| `解绑水鱼账号` | 撤销并清除当前 QQ 的水鱼 OAuth 授权 |
 | `加入排行榜` | 加入排行榜|
 | `退出排行榜` | 退出排行榜|
-| `刷新成绩` | 刷新自己的成绩数据（每日限2次）|
+| `刷新成绩` | 刷新自己的最新成绩数据 |
 | `wmrk <歌曲名/别名/ID>` | 查询该歌曲在本群的排行榜（默认最高难度）|
 | `wmrk <歌曲名/别名/ID> <难度>` | 查询指定难度的排行榜 |
 | `wmbm <歌曲名/别名/ID>` | 查询歌曲的别名信息 |
@@ -130,8 +138,10 @@ MAIMAI_CACHE_PATH=data/maimai_cache
 #### 用户操作
 
 ```
-# 加入排行榜
+# 未绑定 OAuth 时加入排行榜
 用户: 加入排行榜
+Bot: 请在浏览器中打开授权链接完成水鱼账号授权...
+用户: [完成授权后] 加入排行榜
 Bot: ✅ 已成功加入排行榜！
      昵称: 玩家A
      Rating: 14500
@@ -182,7 +192,6 @@ Bot: 正在刷新你的成绩数据，请稍候...
 Bot: ✅ 成绩刷新完成！
      昵称: 玩家A
      Rating: 15000
-     今日剩余刷新次数: 1/2
 
 # 使用@用户加入排行榜
 用户: 加入排行榜 @玩家B
@@ -281,13 +290,6 @@ Bot: 刷新完成！
      成功: 10 人
      失败: 0 人
 
-# 超管重置用户刷新次数
-超管: 重置刷新次数 @玩家A
-Bot: ✅ 已重置用户 123456789 的今日刷新次数！
-
-超管: 重置刷新次数 987654321
-Bot: ✅ 已重置用户 987654321 的今日刷新次数！
-
 # 更新歌曲数据
 超管: 更新歌曲数据
 Bot: 正在更新歌曲数据，请稍候...
@@ -321,9 +323,9 @@ Bot: ✅ 已成功为用户 123456789 加入群 987654321 的排行榜！
 
 ### 使用前提
 
-1. ✅ 用户必须先在 [水鱼查分器](https://www.diving-fish.com/maimaidx/prober/) 绑定 QQ 号
-2. ✅ 用户需要在水鱼查分器中**关闭隐私设置**（允许第三方查询）
-3. ✅ Developer Token 有请求频率限制，请合理使用
+1. ✅ 用户必须先发送 `绑定水鱼账号`，在浏览器完成水鱼 OAuth 授权
+2. ✅ 用户需要同意水鱼查分器用户协议
+3. ✅ OAuth Access Token 会缓存在插件数据库中，用户可用 `解绑水鱼账号` 撤销
 
 ### 功能特点
 

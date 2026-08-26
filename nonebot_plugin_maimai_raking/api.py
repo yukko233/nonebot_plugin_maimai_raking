@@ -7,19 +7,21 @@ from pathlib import Path
 from typing import Optional, Dict, List, Any
 from nonebot.log import logger
 
+from .oauth import OAuthError, OAuthManager, OAuthQuotaExceeded
+
 
 class MaimaiAPI:
     """舞萌 API 客户端"""
 
-    def __init__(self, developer_token: str):
+    def __init__(self, oauth: OAuthManager):
         """初始化 API 客户端
 
         Args:
-            developer_token: 水鱼查分器 Developer Token
+            oauth: 水鱼 OAuth 管理器
         """
         import nonebot_plugin_localstore as store
 
-        self.developer_token = developer_token
+        self.oauth = oauth
         self.base_url = "https://www.diving-fish.com/api/maimaidxprober"
         self.alias_url = "https://www.yuzuchan.moe/api/maimaidx/maimaidxalias"
 
@@ -347,25 +349,50 @@ class MaimaiAPI:
         Returns:
             玩家成绩数据，失败返回 None
         """
-        try:
-            url = f"{self.base_url}/dev/player/records"
-            headers = {"Developer-Token": self.developer_token}
-            params = {"qq": qq}
+        token = await self.oauth.get_access_token(str(qq))
+        url = f"{self.base_url}/player/records"
+        headers = {"Authorization": f"Bearer {token}"}
 
-            response = await self.client.get(url, headers=headers, params=params)
+        try:
+            response = await self.client.get(url, headers=headers)
+            if response.status_code == 401:
+                # Access Token 失效时只刷新一次，避免请求风暴。
+                await self.oauth.invalidate_access_token(str(qq))
+                token = await self.oauth.get_access_token(str(qq), force_refresh=True)
+                response = await self.client.get(
+                    url,
+                    headers={"Authorization": f"Bearer {token}"},
+                )
 
             if response.status_code == 200:
                 return response.json()
-            elif response.status_code == 400:
-                error_msg = response.json().get("message", "未知错误")
-                logger.warning(f"获取玩家 {qq} 成绩失败: {error_msg}")
-                return None
+
+            if response.status_code == 429:
+                raise OAuthQuotaExceeded(
+                    "已超出水鱼 OAuth 今日调用上限。",
+                    code="quota_exceeded",
+                    status_code=429,
+                )
+
+            try:
+                payload = response.json()
+                error_msg = payload.get("message") or payload.get("error_description")
+            except ValueError:
+                error_msg = None
+            if response.status_code in {400, 403}:
+                logger.warning(
+                    f"获取玩家 {qq} 成绩失败: {error_msg or f'HTTP {response.status_code}'}"
+                )
             else:
                 logger.error(f"获取玩家 {qq} 成绩失败: HTTP {response.status_code}")
-                return None
-
-        except Exception as e:
-            logger.error(f"获取玩家 {qq} 成绩时出错: {e}")
+            return None
+        except OAuthError:
+            raise
+        except httpx.HTTPError as e:
+            logger.error(f"获取玩家 {qq} 成绩时网络错误: {e}")
+            return None
+        except (TypeError, ValueError) as e:
+            logger.error(f"获取玩家 {qq} 成绩时响应格式错误: {e}")
             return None
 
     async def find_song(self, query: str) -> Optional[dict]:

@@ -91,6 +91,20 @@ class Database:
                 )
             """)
 
+            # 水鱼 OAuth 授权信息。Token 只按本地 QQ 绑定保存，不写入日志。
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS oauth_tokens (
+                    qq TEXT PRIMARY KEY,
+                    access_token TEXT,
+                    refresh_token TEXT,
+                    expires_at INTEGER NOT NULL DEFAULT 0,
+                    subject TEXT,
+                    scope TEXT,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (qq) REFERENCES users(qq)
+                )
+            """)
+
             # 创建自定义别名表
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS custom_alias (
@@ -460,6 +474,90 @@ class Database:
 
     # ==================== 成绩管理 ====================
 
+    # ==================== OAuth 授权管理 ====================
+
+    async def get_oauth_tokens(self, qq: str) -> Optional[dict]:
+        """读取用户 OAuth Token。"""
+        async with aiosqlite.connect(self.db_file) as db:
+            db.row_factory = sqlite3.Row
+            try:
+                cursor = await db.execute(
+                    "SELECT qq, access_token, refresh_token, expires_at, subject, scope "
+                    "FROM oauth_tokens WHERE qq = ?",
+                    (str(qq),),
+                )
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+            except Exception as e:
+                logger.error(f"读取用户 {qq} 的 OAuth 授权失败: {e}")
+                return None
+
+    async def save_oauth_tokens(
+        self,
+        qq: str,
+        access_token: str,
+        refresh_token: Optional[str],
+        expires_at: int,
+        subject: Optional[str],
+        scope: str,
+    ):
+        """保存或更新用户 OAuth Token。"""
+        async with aiosqlite.connect(self.db_file) as db:
+            try:
+                # 用户可能先绑定水鱼账号、之后才加入某个群，提前建立本地用户记录。
+                await db.execute(
+                    "INSERT OR IGNORE INTO users (qq, joined_at) VALUES (?, ?)",
+                    (str(qq), datetime.now().isoformat()),
+                )
+                await db.execute(
+                    """
+                    INSERT INTO oauth_tokens
+                        (qq, access_token, refresh_token, expires_at, subject, scope, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(qq) DO UPDATE SET
+                        access_token = excluded.access_token,
+                        refresh_token = excluded.refresh_token,
+                        expires_at = excluded.expires_at,
+                        subject = excluded.subject,
+                        scope = excluded.scope,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        str(qq),
+                        access_token,
+                        refresh_token,
+                        int(expires_at),
+                        subject,
+                        scope,
+                        datetime.now().isoformat(),
+                    ),
+                )
+                await db.commit()
+            except Exception as e:
+                await db.rollback()
+                logger.error(f"保存用户 {qq} 的 OAuth 授权失败: {e}")
+                raise
+
+    async def clear_oauth_access_token(self, qq: str):
+        """只清除 Access Token，保留 Refresh Token。"""
+        async with aiosqlite.connect(self.db_file) as db:
+            await db.execute(
+                "UPDATE oauth_tokens SET access_token = NULL, expires_at = 0, updated_at = ? "
+                "WHERE qq = ?",
+                (datetime.now().isoformat(), str(qq)),
+            )
+            await db.commit()
+
+    async def clear_oauth_tokens(self, qq: str):
+        """清除本地 OAuth Token，但保留用户和成绩数据。"""
+        async with aiosqlite.connect(self.db_file) as db:
+            await db.execute("DELETE FROM oauth_tokens WHERE qq = ?", (str(qq),))
+            await db.commit()
+
+    async def delete_oauth_tokens(self, qq: str):
+        """删除本地 OAuth 授权。"""
+        await self.clear_oauth_tokens(qq)
+
     async def update_user_records(self, qq: str, records: dict):
         """更新用户成绩"""
         async with aiosqlite.connect(self.db_file) as db:
@@ -539,21 +637,6 @@ class Database:
             except Exception as e:
                 await db.rollback()
                 logger.error(f"记录用户 {qq} 的刷新操作失败: {e}")
-
-    async def reset_daily_refresh_count(self, qq: str, date: str):
-        """重置用户指定日期的刷新次数"""
-        async with aiosqlite.connect(self.db_file) as db:
-            db.row_factory = sqlite3.Row
-            try:
-                await db.execute(
-                    "DELETE FROM refresh_logs WHERE qq = ? AND refresh_date = ?",
-                    (qq, date)
-                )
-                await db.commit()
-                logger.info(f"重置用户 {qq} 的刷新次数: {date}")
-            except Exception as e:
-                await db.rollback()
-                logger.error(f"重置用户 {qq} 的刷新次数失败: {e}")
 
     # ==================== 自定义别名管理 ====================
 
