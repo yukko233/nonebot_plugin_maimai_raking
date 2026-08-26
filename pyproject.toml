@@ -44,7 +44,7 @@ nonebot-plugin-maimai-raking = "nonebot_plugin_maimai_raking"
 nonebot_plugin_maimai_raking = "nonebot_plugin_maimai_raking"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.26,<1.29"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
