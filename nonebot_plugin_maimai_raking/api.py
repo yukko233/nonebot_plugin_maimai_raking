@@ -15,6 +15,29 @@ from .oauth import OAuthError, OAuthManager, OAuthQuotaExceeded
 class MaimaiAPI:
     """舞萌 API 客户端"""
 
+    _LXNS_VERSION_WEIGHTS = {
+        "maimai": 10,
+        "maimai PLUS": 20,
+        "maimai GreeN": 30,
+        "maimai GreeN PLUS": 40,
+        "maimai ORANGE": 50,
+        "maimai ORANGE PLUS": 60,
+        "maimai PiNK": 70,
+        "maimai PiNK PLUS": 80,
+        "maimai MURASAKi": 90,
+        "maimai MURASAKi PLUS": 100,
+        "maimai MiLK": 110,
+        "MiLK PLUS": 120,
+        "maimai FiNALE": 130,
+        "maimai でらっくす": 140,
+        "maimai でらっくす Splash": 160,
+        "maimai でらっくす UNiVERSE": 180,
+        "maimai でらっくす FESTiVAL": 190,
+        "maimai でらっくす BUDDiES": 200,
+        "maimai でらっくす PRiSM": 210,
+        "maimai でらっくす PRiSM PLUS": 220,
+    }
+
     def __init__(self, oauth: OAuthManager):
         """初始化 API 客户端
 
@@ -28,7 +51,8 @@ class MaimaiAPI:
         self.alias_url = "https://www.yuzuchan.moe/api/maimaidx/maimaidxalias"
         self.alias_lxns_url = "https://maimai.lxns.net/api/v0/maimai/alias/list"
         self.alias_dxrating_url = "https://miruku.dxrating.net/api/v1/aliases"
-        self.alias_cache_version = 2
+        # ID 映射规则发生变化时必须使旧缓存失效，避免继续使用未转换的落雪 ID。
+        self.alias_cache_version = 3
 
         # 缓存数据
         self.music_data: List[dict] = []
@@ -114,6 +138,49 @@ class MaimaiAPI:
         normalized = unicodedata.normalize("NFKC", title).casefold().strip()
         return "".join(char for char in normalized if not char.isspace())
 
+    @classmethod
+    def _is_post_finale_version(cls, song: dict) -> bool:
+        """判断歌曲版本是否晚于 Finale。
+
+        水鱼 music_data 的 basic_info.from 使用原始版本名称；这里的权重与
+        maittx 的版本判断保持一致。未知版本按未知版本处理，启用 DX ID 规则。
+        """
+        basic_info = song.get("basic_info")
+        if not isinstance(basic_info, dict):
+            return True
+        raw_version = basic_info.get("from")
+        if raw_version is None or str(raw_version).strip() == "":
+            raw_version = basic_info.get("version")
+        version_weight = cls._LXNS_VERSION_WEIGHTS.get(str(raw_version), 999)
+        return version_weight > 130
+
+    @staticmethod
+    def _normalize_song_id_for_lxns(song_id: Any, is_post_finale: bool) -> str:
+        """将水鱼歌曲 ID 转换为落雪资源/普通歌曲 ID 格式。
+
+        该转换只用于与落雪侧的 ID 表示进行匹配；水鱼 music_data 中的原始
+        Song.id 不会被修改。宴会场歌曲由调用方保留自己的 6 位歌曲 ID。
+        """
+        normalized_id = str(song_id).strip()
+        if not is_post_finale:
+            return normalized_id
+
+        if len(normalized_id) == 6 and normalized_id.startswith("100"):
+            stripped = normalized_id[3:]
+            try:
+                return str(int(stripped))
+            except ValueError:
+                return stripped
+        if len(normalized_id) == 5 and normalized_id.startswith("10"):
+            stripped = normalized_id[2:]
+            try:
+                return str(int(stripped))
+            except ValueError:
+                return stripped
+        if len(normalized_id) >= 5:
+            return normalized_id[1:]
+        return normalized_id
+
     @staticmethod
     def _as_alias_entries(data: Any) -> List[dict]:
         """从不同数据源的响应中提取别名条目。"""
@@ -164,6 +231,37 @@ class MaimaiAPI:
                 title_map.setdefault(title, []).append(song_id)
         return title_map
 
+    def _build_lxns_song_id_map(self) -> Dict[str, List[int]]:
+        """建立落雪歌曲 ID 到水鱼歌曲 ID 的映射。
+
+        落雪普通歌曲使用单一歌曲 ID 表示 SD/DX 谱面；水鱼则可能分别维护
+        SD ID 和 DX ID。因此同一个落雪 ID 可能对应多个水鱼 ID，必须全部
+        保存，不能只保留最后一个映射。
+        """
+        lxns_id_map: Dict[str, List[int]] = {}
+        for song in self.music_data:
+            if not isinstance(song, dict):
+                continue
+            try:
+                water_song_id = int(song["id"])
+            except (KeyError, TypeError, ValueError):
+                continue
+
+            # 落雪别名接口对宴会场歌曲使用歌曲自身的 6 位 ID；资源 URL 的
+            # 特殊转换不能套用到这里。
+            if self.is_utage_chart(water_song_id):
+                lxns_song_id = str(water_song_id)
+            else:
+                lxns_song_id = self._normalize_song_id_for_lxns(
+                    water_song_id,
+                    self._is_post_finale_version(song),
+                )
+
+            mapped_ids = lxns_id_map.setdefault(lxns_song_id, [])
+            if water_song_id not in mapped_ids:
+                mapped_ids.append(water_song_id)
+        return lxns_id_map
+
     def _merge_yuzu_aliases(self, data: Any, alias_map: Dict[int, List[str]]) -> int:
         count = 0
         for item in self._as_alias_entries(data):
@@ -173,11 +271,29 @@ class MaimaiAPI:
         return count
 
     def _merge_lxns_aliases(self, data: Any, alias_map: Dict[int, List[str]]) -> int:
+        """合并落雪别名，并将落雪 ID 转换回水鱼歌曲 ID。"""
+        lxns_id_map = self._build_lxns_song_id_map()
         count = 0
+        unmatched_count = 0
         for item in self._as_alias_entries(data):
-            count += self._add_aliases(
-                alias_map, item.get("song_id"), item.get("aliases")
-            )
+            raw_song_id = item.get("song_id", item.get("SongID"))
+            try:
+                lxns_song_id = str(int(raw_song_id))
+            except (TypeError, ValueError):
+                lxns_song_id = str(raw_song_id or "").strip()
+
+            water_song_ids = lxns_id_map.get(lxns_song_id, [])
+            if not water_song_ids:
+                unmatched_count += 1
+                continue
+
+            for water_song_id in water_song_ids:
+                count += self._add_aliases(
+                    alias_map, water_song_id, item.get("aliases", item.get("Alias"))
+                )
+
+        if unmatched_count:
+            logger.info(f"落雪别名中有 {unmatched_count} 条歌曲 ID 未匹配到水鱼歌曲")
         return count
 
     def _merge_dxrating_aliases(self, data: Any, alias_map: Dict[int, List[str]]) -> int:
