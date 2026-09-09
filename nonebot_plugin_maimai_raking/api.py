@@ -21,17 +21,14 @@ from .lxns_oauth import (
 from .song_utils import is_utage_song, split_utage_title
 
 
-_TRADITIONAL_TO_SIMPLIFIED = OpenCC("t2s")
-# OpenCC 的繁简转换不会处理日文新字体；宴谱标签使用了这些字形，
-# 搜索时需要继续归一到玩家常用的简体写法。
-_SEARCH_VARIANT_TRANSLATION = str.maketrans(
-    {
-        "発": "发",
-        "覚": "觉",
-        "両": "两",
-        "蔵": "藏",
-    }
-)
+_JAPANESE_TO_TRADITIONAL = OpenCC("jp2t.json")
+_TRADITIONAL_TO_SIMPLIFIED = OpenCC("t2s.json")
+
+
+def _normalize_cjk_variants(value: str) -> str:
+    """将日文新字体、繁体字统一为简体字，供搜索匹配使用。"""
+    traditional = _JAPANESE_TO_TRADITIONAL.convert(value)
+    return _TRADITIONAL_TO_SIMPLIFIED.convert(traditional)
 
 
 @dataclass(frozen=True)
@@ -175,8 +172,7 @@ class MaimaiAPI:
         if not isinstance(title, str):
             return ""
         normalized = unicodedata.normalize("NFKC", title).casefold().strip()
-        normalized = _TRADITIONAL_TO_SIMPLIFIED.convert(normalized)
-        normalized = normalized.translate(_SEARCH_VARIANT_TRANSLATION)
+        normalized = _normalize_cjk_variants(normalized)
         return "".join(char for char in normalized if not char.isspace())
 
     @staticmethod
@@ -185,8 +181,7 @@ class MaimaiAPI:
         if value is None:
             return ""
         normalized = unicodedata.normalize("NFKC", str(value)).casefold().strip()
-        normalized = _TRADITIONAL_TO_SIMPLIFIED.convert(normalized)
-        normalized = normalized.translate(_SEARCH_VARIANT_TRANSLATION)
+        normalized = _normalize_cjk_variants(normalized)
         if compact:
             return "".join(
                 char
