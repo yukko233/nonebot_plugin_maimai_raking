@@ -80,6 +80,19 @@ _STATIC_FOOTER_OVERLAY: Optional[Image.Image] = None
 _TYPE_WIDTHS: Optional[dict] = None
 
 
+def get_song_type_display(song: dict) -> str:
+    """返回歌曲在用户界面中应显示的谱面类型。"""
+    try:
+        if int(song.get("id", 0)) >= 100000:
+            return "宴会场"
+    except (TypeError, ValueError):
+        pass
+    category = str(song.get("category") or song.get("chartType") or "").strip()
+    if category.casefold() in {"utage", "宴会场"}:
+        return "宴会场"
+    return "DX谱面" if str(song.get("type", "DX")).upper() == "DX" else "标准谱面"
+
+
 def _ensure_static_resources():
     """首次渲染时初始化预渲染资源和 emoji 缓存"""
     global _STATIC_HEADER_OVERLAY, _STATIC_FOOTER_OVERLAY, _TYPE_WIDTHS, _emoji_source
@@ -97,7 +110,7 @@ def _ensure_static_resources():
     d = ImageDraw.Draw(tmp)
     font_small = _get_font(18)
     _TYPE_WIDTHS = {}
-    for t in ("DX谱面", "标准谱面"):
+    for t in ("DX谱面", "标准谱面", "宴会场"):
         bbox = d.textbbox((0, 0), t, font=font_small)
         _TYPE_WIDTHS[t] = (bbox[2] - bbox[0]) + 20
 
@@ -301,7 +314,7 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     font_tiny = _get_font(17)
     
     # 简洁的背景设计
-    song_type = song.get("type", "DX")
+    type_text = get_song_type_display(song)
     
     # 使用浅色背景
     bg_color = (245, 245, 250)
@@ -344,10 +357,16 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     tag_height = 32
     gap = 10
     
-    # 类型标签（如"DX谱面"）
-    type_text = "DX谱面" if song_type == "DX" else "标准谱面"
-    type_bg = (255, 228, 225) if song_type == "DX" else (230, 240, 255)
-    type_text_color = (220, 100, 100) if song_type == "DX" else (100, 150, 220)
+    # 类型标签
+    if type_text == "宴会场":
+        type_bg = (255, 240, 210)
+        type_text_color = (210, 130, 40)
+    elif type_text == "DX谱面":
+        type_bg = (255, 228, 225)
+        type_text_color = (220, 100, 100)
+    else:
+        type_bg = (230, 240, 255)
+        type_text_color = (100, 150, 220)
     
     type_width = _TYPE_WIDTHS[type_text]
     

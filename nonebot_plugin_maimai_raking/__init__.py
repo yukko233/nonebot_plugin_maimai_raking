@@ -41,7 +41,13 @@ from .lxns_oauth import (
     LxnsOAuthNotConfigured,
     LxnsOAuthQuotaExceeded,
 )
-from .render import render_ranking_image, clear_cover_memory_cache, get_help_image, pre_render_help_images
+from .render import (
+    render_ranking_image,
+    clear_cover_memory_cache,
+    get_help_image,
+    get_song_type_display,
+    pre_render_help_images,
+)
 
 __plugin_meta__ = PluginMetadata(
     name="舞萌排行榜",
@@ -1311,7 +1317,6 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     
     song_id = int(song["id"])
     song_title = song["title"]
-    song_type = song.get("type", "DX")
     
     # 查找该歌曲的所有别名
     aliases = []
@@ -1327,9 +1332,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     result = f"🎵 歌曲信息\n"
     result += f"📝 名称: {song_title}\n"
     result += f"🆔 ID: {song_id}\n"
-    # 显示谱面类型，将SD改为标准
-    type_display = "DX谱面" if song_type == "DX" else "标准谱面"
-    result += f"📊 类型: {type_display}\n"
+    result += f"📊 类型: {get_song_type_display(song)}\n"
     
     if aliases:
         result += f"🏷️ 别名 ({len(aliases)}个):\n"
