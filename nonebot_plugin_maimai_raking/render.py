@@ -359,8 +359,8 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     
     # 类型标签
     if type_text == "宴会场":
-        type_bg = (255, 240, 210)
-        type_text_color = (210, 130, 40)
+        type_bg = (238, 228, 250)
+        type_text_color = (135, 85, 180)
     elif type_text == "DX谱面":
         type_bg = (255, 228, 225)
         type_text_color = (220, 100, 100)
