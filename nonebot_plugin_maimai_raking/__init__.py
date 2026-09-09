@@ -98,7 +98,6 @@ lxns_oauth = LxnsOAuthManager(
     db=db,
     client_id=config.maimai_lxns_oauth_client_id,
     client_secret=config.maimai_lxns_oauth_client_secret,
-    redirect_uri=config.maimai_lxns_oauth_redirect_uri,
     scope=config.maimai_lxns_oauth_scope,
     base_url=config.maimai_lxns_oauth_base_url,
 )
@@ -145,8 +144,7 @@ def _oauth_binding_message(qq: str, device: dict, retry_hint: str) -> str:
 def _oauth_error_message(error: OAuthError) -> str:
     if isinstance(error, LxnsOAuthNotConfigured):
         return (
-            "❌ 插件尚未配置落雪 OAuth 应用，请联系管理员设置 client_id、"
-            "client_secret 和 redirect_uri。"
+            "❌ 插件尚未配置落雪 OAuth 应用，请联系管理员设置 client_id 和 client_secret。"
         )
     if isinstance(error, LxnsOAuthConsentRequired):
         return f"❌ 当前落雪授权未完成，需要重新授权。\n{_lxns_bind_prompt()}"

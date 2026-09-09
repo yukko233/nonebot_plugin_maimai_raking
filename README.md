@@ -56,8 +56,6 @@ MAIMAI_OAUTH_BASE_URL=https://auth.diving-fish.com
 # 落雪 OAuth 应用配置（需要使用落雪查分器时填写）
 MAIMAI_LXNS_OAUTH_CLIENT_ID=your_lxns_client_id
 MAIMAI_LXNS_OAUTH_CLIENT_SECRET=your_lxns_client_secret
-# 必须与落雪 OAuth 应用登记的回调地址完全一致
-MAIMAI_LXNS_OAUTH_REDIRECT_URI=https://your.example.com/lxns/callback
 # 默认只申请读取舞萌成绩；如应用已申请其它权限可空格分隔填写
 MAIMAI_LXNS_OAUTH_SCOPE=read_player
 # 可选，默认值如下
@@ -79,7 +77,7 @@ MAIMAI_CACHE_PATH=data/maimai_cache
 
 已有排行榜用户不需要重新录入 QQ：插件会先按 `ref` 摘要尝试换票，并兼容迁移期的 `qq` subject；如果服务端返回 `consent_required`，再让用户执行 `绑定水鱼账号`。
 
-落雪 OAuth 应用请参考[落雪 OAuth 接入指南](https://maimai.lxns.net/docs/oauth-guide)创建，并将登记的回调地址填写到 `MAIMAI_LXNS_OAUTH_REDIRECT_URI`。
+落雪 OAuth 应用请参考[落雪 OAuth 接入指南](https://maimai.lxns.net/docs/oauth-guide)创建，并在应用设置中勾选“无回调地址”。授权成功后落雪会直接显示授权码，用户将其发送给 Bot 即可完成绑定。
 
 ## 📖 使用方法
 

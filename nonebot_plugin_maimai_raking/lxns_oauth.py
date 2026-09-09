@@ -44,14 +44,12 @@ class LxnsOAuthManager:
         db,
         client_id: str,
         client_secret: str,
-        redirect_uri: str,
         scope: str = "read_player",
         base_url: str = "https://maimai.lxns.net",
     ):
         self.db = db
         self.client_id = client_id.strip()
         self.client_secret = client_secret.strip()
-        self.redirect_uri = redirect_uri.strip()
         self.scope = scope.strip() or "read_player"
         self.base_url = base_url.rstrip("/")
         self.client = httpx.AsyncClient(timeout=15.0)
@@ -60,12 +58,13 @@ class LxnsOAuthManager:
 
     @property
     def is_configured(self) -> bool:
-        return bool(self.client_id and self.client_secret and self.redirect_uri)
+        # 落雪应用可以勾选“无回调地址”，此时授权成功后会直接显示 code。
+        return bool(self.client_id and self.client_secret)
 
     def _ensure_configured(self):
         if not self.is_configured:
             raise LxnsOAuthNotConfigured(
-                "未配置落雪 OAuth 应用，请设置客户端 ID、客户端密钥和回调地址。",
+                "未配置落雪 OAuth 应用，请设置客户端 ID 和客户端密钥。",
                 code="not_configured",
             )
 
@@ -190,7 +189,6 @@ class LxnsOAuthManager:
             {
                 "response_type": "code",
                 "client_id": self.client_id,
-                "redirect_uri": self.redirect_uri,
                 "scope": self.scope,
                 "state": state,
             }
@@ -205,7 +203,8 @@ class LxnsOAuthManager:
             return None, None
 
         parsed = urlparse(value)
-        if parsed.scheme in {"http", "https"}:
+        # 兼容 HTTP(S)、自定义 URI scheme，以及无回调模式返回的纯授权码。
+        if parsed.scheme and (parsed.query or parsed.fragment):
             query = parse_qs(parsed.query)
             fragment = parse_qs(parsed.fragment)
             code = (query.get("code") or fragment.get("code") or [None])[0]
@@ -247,7 +246,6 @@ class LxnsOAuthManager:
                 "client_secret": self.client_secret,
                 "grant_type": "authorization_code",
                 "code": code,
-                "redirect_uri": self.redirect_uri,
             }
         )
         await self._save_token(qq, payload)
