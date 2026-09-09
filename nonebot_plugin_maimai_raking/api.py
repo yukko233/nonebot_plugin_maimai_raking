@@ -881,8 +881,6 @@ class MaimaiAPI:
                 try:
                     current_song_id = int(song["id"])
                     if current_song_id == song_id:
-                        if self.is_utage_chart(current_song_id):
-                            continue
                         return song
                 except (ValueError, TypeError):
                     continue
@@ -891,8 +889,6 @@ class MaimaiAPI:
         for song in self.music_data:
             if song["title"].lower() == query.lower():
                 try:
-                    if self.is_utage_chart(int(song["id"])):
-                        continue
                     return song
                 except (ValueError, TypeError):
                     continue
@@ -912,8 +908,6 @@ class MaimaiAPI:
                                 try:
                                     current_song_id = int(song["id"])
                                     if current_song_id == song_id:
-                                        if self.is_utage_chart(current_song_id):
-                                            continue
                                         return song
                                 except (ValueError, TypeError):
                                     continue
@@ -927,8 +921,6 @@ class MaimaiAPI:
             query_lower = query.lower()
             if query_lower in title:
                 try:
-                    if self.is_utage_chart(int(song["id"])):
-                        continue
                     if title == query_lower:
                         score = 100
                     elif title.startswith(query_lower):
@@ -987,8 +979,6 @@ class MaimaiAPI:
                                 try:
                                     current_song_id = int(song["id"])
                                     if current_song_id == song_id:
-                                        if self.is_utage_chart(current_song_id):
-                                            continue
                                         matches.append((match_score, song, "alias"))
                                         break
                                 except (ValueError, TypeError):
