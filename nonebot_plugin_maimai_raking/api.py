@@ -5,8 +5,10 @@ import httpx
 import json
 import sqlite3
 import unicodedata
+from dataclasses import dataclass
+from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Tuple
 from nonebot.log import logger
 
 from .oauth import OAuthError, OAuthManager, OAuthQuotaExceeded
@@ -15,6 +17,15 @@ from .lxns_oauth import (
     LxnsOAuthManager,
     LxnsOAuthQuotaExceeded,
 )
+
+
+@dataclass(frozen=True)
+class SongSearchResult:
+    """歌曲搜索结果及其匹配信息。"""
+
+    song: dict
+    score: int
+    matched_by: str
 
 
 class MaimaiAPI:
@@ -150,6 +161,56 @@ class MaimaiAPI:
             return ""
         normalized = unicodedata.normalize("NFKC", title).casefold().strip()
         return "".join(char for char in normalized if not char.isspace())
+
+    @staticmethod
+    def _normalize_search_text(value: Any, compact: bool = False) -> str:
+        """规范化搜索文本，兼容全角字符、大小写和常见分隔符。"""
+        if value is None:
+            return ""
+        normalized = unicodedata.normalize("NFKC", str(value)).casefold().strip()
+        if compact:
+            return "".join(
+                char
+                for char in normalized
+                if not char.isspace()
+                and not unicodedata.category(char).startswith("P")
+            )
+        return " ".join(normalized.split())
+
+    @classmethod
+    def _score_search_term(
+        cls, query: str, candidate: str, field: str
+    ) -> Optional[Tuple[int, str]]:
+        """计算歌曲名或别名与查询词的匹配分数。"""
+        query_normalized = cls._normalize_search_text(query)
+        candidate_normalized = cls._normalize_search_text(candidate)
+        query_compact = cls._normalize_search_text(query, compact=True)
+        candidate_compact = cls._normalize_search_text(candidate, compact=True)
+        if not query_normalized or not candidate_normalized:
+            return None
+
+        title_bonus = 20 if field == "title" else 0
+        if query_normalized == candidate_normalized:
+            return 1000 + title_bonus, f"{field}_exact"
+        if query_compact == candidate_compact:
+            return 940 + title_bonus, f"{field}_normalized"
+
+        # 单字符查询只接受精确匹配，避免一个字匹配到大量无关歌曲。
+        if len(query_compact) < 2:
+            return None
+        if candidate_normalized.startswith(query_normalized):
+            return 840 + title_bonus, f"{field}_prefix"
+        if candidate_compact.startswith(query_compact):
+            return 820 + title_bonus, f"{field}_normalized_prefix"
+        if query_normalized in candidate_normalized:
+            return 740 + title_bonus, f"{field}_contains"
+        if query_compact in candidate_compact:
+            return 720 + title_bonus, f"{field}_normalized_contains"
+
+        similarity = SequenceMatcher(None, query_compact, candidate_compact).ratio()
+        if similarity >= 0.72:
+            return 300 + int(similarity * 100) + title_bonus, f"{field}_fuzzy"
+        return None
 
     @classmethod
     def _is_post_finale_version(cls, song: dict) -> bool:
@@ -856,139 +917,117 @@ class MaimaiAPI:
             return await self._get_lxns_player_records(qq)
         return await self._get_divingfish_player_records(qq)
 
-    async def find_song(self, query: str) -> Optional[dict]:
-        """查找歌曲
-
-        支持歌曲 ID、歌曲名、别名查询
-
-        Args:
-            query: 查询关键词（ID/歌曲名/别名）
-
-        Returns:
-            歌曲信息，未找到返回 None
-        """
-        query = query.strip()
+    async def search_songs(self, query: str, limit: int = 5) -> List[SongSearchResult]:
+        """搜索歌曲并返回按匹配质量排序的候选结果。"""
+        query = str(query or "").strip()
+        if not query:
+            return []
 
         if not self.music_data:
             await self.load_music_data()
         if not self.alias_data:
             await self.load_alias_data()
 
-        # 1. 尝试按 ID 查找
-        if query.isdigit():
-            song_id = int(query)
-            for song in self.music_data:
-                try:
-                    current_song_id = int(song["id"])
-                    if current_song_id == song_id:
-                        return song
-                except (ValueError, TypeError):
-                    continue
+        query_normalized = self._normalize_search_text(query)
+        query_compact = self._normalize_search_text(query, compact=True)
+        if not query_normalized or not query_compact:
+            return []
 
-        # 2. 尝试按歌曲名精确匹配
+        try:
+            result_limit = max(1, int(limit))
+        except (TypeError, ValueError):
+            result_limit = 5
+
+        songs_by_id: Dict[int, dict] = {}
         for song in self.music_data:
-            if song["title"].lower() == query.lower():
-                try:
-                    return song
-                except (ValueError, TypeError):
-                    continue
+            if not isinstance(song, dict):
+                continue
+            try:
+                song_id = int(song["id"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            songs_by_id.setdefault(song_id, song)
 
-        # 3. 尝试按别名查找
+        matches: Dict[int, SongSearchResult] = {}
+
+        def add_match(song_id: int, song: dict, score: int, matched_by: str):
+            result = SongSearchResult(song=song, score=score, matched_by=matched_by)
+            previous = matches.get(song_id)
+            if previous is None or result.score > previous.score:
+                matches[song_id] = result
+
+        # 数字查询优先精确匹配歌曲 ID，支持全角数字。
+        if query_compact.isdigit():
+            try:
+                song_id = int(query_compact)
+            except ValueError:
+                song_id = None
+            if song_id is not None and song_id in songs_by_id:
+                add_match(song_id, songs_by_id[song_id], 2000, "id_exact")
+
+        for song_id, song in songs_by_id.items():
+            title = song.get("title")
+            if not isinstance(title, str):
+                continue
+            scored = self._score_search_term(query, title, "title")
+            if scored is not None:
+                add_match(song_id, song, scored[0], scored[1])
+
+        # alias_data 已经合并了多个别名源和自定义别名；这里再次按歌曲去重，
+        # 避免同一首歌拥有多个相同别名时重复参与排序。
+        seen_aliases = set()
         for alias_item in self.alias_data:
-            if "Alias" in alias_item and isinstance(alias_item["Alias"], list):
-                for alias in alias_item["Alias"]:
-                    if alias.lower() == query.lower():
-                        song_id = alias_item.get("SongID")
-                        if song_id is not None:
-                            try:
-                                song_id = int(song_id)
-                            except (ValueError, TypeError):
-                                continue
-                            for song in self.music_data:
-                                try:
-                                    current_song_id = int(song["id"])
-                                    if current_song_id == song_id:
-                                        return song
-                                except (ValueError, TypeError):
-                                    continue
-
-        # 4. 模糊匹配
-        matches = []
-
-        # 4.1 按歌曲名模糊匹配
-        for song in self.music_data:
-            title = song["title"].lower()
-            query_lower = query.lower()
-            if query_lower in title:
-                try:
-                    if title == query_lower:
-                        score = 100
-                    elif title.startswith(query_lower):
-                        score = 90
-                    else:
-                        score = 80
-                    matches.append((score, song, "title"))
-                except (ValueError, TypeError):
+            if not isinstance(alias_item, dict):
+                continue
+            try:
+                song_id = int(alias_item.get("SongID"))
+            except (TypeError, ValueError):
+                continue
+            song = songs_by_id.get(song_id)
+            if song is None:
+                continue
+            aliases = alias_item.get("Alias")
+            if not isinstance(aliases, list):
+                continue
+            for alias in aliases:
+                if not isinstance(alias, str):
                     continue
+                alias_key = (song_id, self._normalize_search_text(alias, compact=True))
+                if alias_key in seen_aliases:
+                    continue
+                seen_aliases.add(alias_key)
+                scored = self._score_search_term(query, alias, "alias")
+                if scored is not None:
+                    add_match(song_id, song, scored[0], scored[1])
 
-        # 4.2 按别名模糊匹配
-        for alias_item in self.alias_data:
-            if "Alias" in alias_item and isinstance(alias_item["Alias"], list):
-                for alias in alias_item["Alias"]:
-                    alias_lower = alias.lower()
-                    query_lower = query.lower()
-                    match_score = 0
+        results = sorted(
+            matches.values(),
+            key=lambda result: (
+                -result.score,
+                self._normalize_search_text(result.song.get("title")),
+                str(result.song.get("id", "")),
+            ),
+        )
+        return results[:result_limit]
 
-                    alias_no_space = alias_lower.replace(" ", "").replace("-", "").replace("_", "")
-                    query_no_space = query_lower.replace(" ", "").replace("-", "").replace("_", "")
+    @staticmethod
+    def is_ambiguous_song_search(results: List[SongSearchResult]) -> bool:
+        """判断搜索结果是否需要用户进一步缩小范围。"""
+        if len(results) < 2:
+            return False
+        top, second = results[0], results[1]
+        # ID、歌曲名或别名的规范化精确匹配可以直接使用。
+        if top.score >= 940:
+            return False
+        # 低置信度结果不应静默选中；接近的前缀/包含结果也需要提示候选。
+        if top.score < 500:
+            return True
+        return second.score >= top.score - 20
 
-                    if alias_lower == query_lower:
-                        match_score = 95
-                    elif alias_no_space == query_no_space and len(query_no_space) >= 3:
-                        match_score = 93
-                    elif alias_lower.startswith(query_lower):
-                        match_score = 85
-                    elif alias_no_space.startswith(query_no_space) and len(query_no_space) >= 3:
-                        match_score = 83
-                    elif query_lower.startswith(alias_lower):
-                        if len(alias_lower) >= 5 and len(alias_lower) / len(query_lower) >= 0.6:
-                            match_score = 82
-                    elif query_no_space.startswith(alias_no_space) and len(alias_no_space) >= 4:
-                        if len(alias_no_space) / len(query_no_space) >= 0.5:
-                            match_score = 80
-                    elif alias_lower in query_lower:
-                        if len(alias_lower) >= 5 and len(alias_lower) / len(query_lower) >= 0.5:
-                            match_score = 78
-                    elif alias_no_space in query_no_space and len(alias_no_space) >= 4:
-                        if len(alias_no_space) / len(query_no_space) >= 0.4:
-                            match_score = 76
-                    elif query_lower in alias_lower:
-                        if len(query_lower) >= 4:
-                            match_score = 75
-                    elif query_no_space in alias_no_space and len(query_no_space) >= 3:
-                        match_score = 73
-
-                    if match_score > 0:
-                        song_id = alias_item.get("SongID")
-                        if song_id is not None:
-                            try:
-                                song_id = int(song_id)
-                            except (ValueError, TypeError):
-                                continue
-                            for song in self.music_data:
-                                try:
-                                    current_song_id = int(song["id"])
-                                    if current_song_id == song_id:
-                                        matches.append((match_score, song, "alias"))
-                                        break
-                                except (ValueError, TypeError):
-                                    continue
-
-        if matches:
-            matches.sort(key=lambda x: x[0], reverse=True)
-            return matches[0][1]
-
-        return None
+    async def find_song(self, query: str) -> Optional[dict]:
+        """查找最佳匹配歌曲，兼容现有调用方。"""
+        results = await self.search_songs(query, limit=1)
+        return results[0].song if results else None
 
     def _convert_song_id_to_cover_id(self, song_id: int) -> int:
         """根据规则转换歌曲ID为封面ID

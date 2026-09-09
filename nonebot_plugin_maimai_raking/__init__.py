@@ -15,6 +15,8 @@ from nonebot.log import logger
 from nonebot.adapters.onebot.v11 import Message
 from nonebot.typing import T_State
 from datetime import datetime
+import unicodedata
+from typing import List, Optional, Tuple
 
 require("nonebot_plugin_apscheduler")
 from nonebot_plugin_apscheduler import scheduler
@@ -23,7 +25,7 @@ require("nonebot_plugin_localstore")
 
 from .config import Config
 from .database import Database
-from .api import MaimaiAPI
+from .api import MaimaiAPI, SongSearchResult
 from .oauth import (
     OAuthConsentRequired,
     OAuthError,
@@ -193,6 +195,92 @@ async def refresh_custom_alias_cache():
     """同步数据库中的自定义别名至 API 缓存"""
     custom_aliases = await db.get_all_custom_aliases()
     api.set_custom_aliases(custom_aliases)
+
+
+def _normalize_command_token(value: str) -> str:
+    return unicodedata.normalize("NFKC", value or "").casefold().strip()
+
+
+_RANKING_DIFFICULTIES = {
+    "绿": 0,
+    "basic": 0,
+    "bas": 0,
+    "黄": 1,
+    "advanced": 1,
+    "adv": 1,
+    "红": 2,
+    "expert": 2,
+    "exp": 2,
+    "紫": 3,
+    "master": 3,
+    "白": 4,
+    "remaster": 4,
+    "re:master": 4,
+    "re master": 4,
+    "宴": 10,
+    "宴谱": 10,
+    "utage": 10,
+    "utage谱": 10,
+}
+
+_RANKING_DIFFICULTY_NAMES = {
+    0: "Basic（绿）",
+    1: "Advanced（黄）",
+    2: "Expert（红）",
+    3: "Master（紫）",
+    4: "Re:Master（白）",
+    10: "宴谱",
+}
+
+
+def _format_song_candidates(results: List[SongSearchResult]) -> str:
+    candidates = []
+    for result in results[:5]:
+        song = result.song
+        candidates.append(f"- {song.get('title', '未知歌曲')}（ID: {song.get('id', '未知')}）")
+    return (
+        "匹配到多个歌曲，请使用更完整的歌曲名、别名或 ID：\n"
+        + "\n".join(candidates)
+    )
+
+
+async def _resolve_song_query(query: str) -> Tuple[Optional[dict], Optional[str]]:
+    """解析歌曲查询；结果接近时返回候选提示，避免静默误匹配。"""
+    results = await api.search_songs(query, limit=5)
+    if not results:
+        return None, None
+    if api.is_ambiguous_song_search(results):
+        return None, _format_song_candidates(results)
+    return results[0].song, None
+
+
+async def _resolve_ranking_query(
+    query: str,
+) -> Tuple[Optional[dict], Optional[int], Optional[str]]:
+    """解析 wmrk 的歌曲和可选难度参数。"""
+    query = query.strip()
+    full_results = await api.search_songs(query, limit=5)
+
+    # 完整查询本身是精确歌曲名/别名时，优先按歌曲名处理，避免把标题末尾
+    # 的“紫”“白”等文字误认为难度参数。
+    if full_results and full_results[0].score >= 940:
+        return full_results[0].song, None, None
+
+    parts = query.split()
+    target_difficulty = None
+    song_query = query
+    if len(parts) > 1:
+        difficulty_token = _normalize_command_token(parts[-1])
+        target_difficulty = _RANKING_DIFFICULTIES.get(difficulty_token)
+        if target_difficulty is not None:
+            song_query = " ".join(parts[:-1]).strip()
+
+    results = full_results if song_query == query else await api.search_songs(song_query, limit=5)
+    if not results:
+        return None, target_difficulty, None
+    if api.is_ambiguous_song_search(results):
+        return None, target_difficulty, _format_song_candidates(results)
+    return results[0].song, target_difficulty, None
 
 
 def _equals_ignore_case(a: str, b: str) -> bool:
@@ -1098,38 +1186,17 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
         await query_ranking.finish("请输入歌曲名称、别名或 ID！\n例如: wmrk 群青\n可选难度: wmrk 群青 紫")
         return
     
-    # 解析查询参数（歌曲名 + 可选难度）
-    parts = query.split()
-    
-    # 难度映射
-    difficulty_map = {
-        "绿": 0,  # Basic
-        "黄": 1,  # Advanced
-        "红": 2,  # Expert
-        "紫": 3,  # Master
-        "白": 4,  # Re:Master
-    }
-    
-    # 检查最后一个词是否为难度参数
-    target_difficulty = None
-    song_query = query
-    
-    if len(parts) > 1 and parts[-1] in difficulty_map:
-        # 最后一个词是难度，将其分离
-        target_difficulty = difficulty_map[parts[-1]]
-        song_query = " ".join(parts[:-1])
-    
-    if not song_query:
-        song_query = query
-    
-    # 获取歌曲信息
+    # 获取歌曲信息，并安全解析可选难度参数。
     try:
-        song = await api.find_song(song_query)
+        song, target_difficulty, search_hint = await _resolve_ranking_query(query)
     except Exception as e:
         logger.error(f"查找歌曲时出错: {e}")
         await query_ranking.finish("❌ 查询失败，请稍后重试！")
         return
     
+    if search_hint:
+        await query_ranking.finish(f"❌ {search_hint}")
+        return
     if not song:
         await query_ranking.finish("❌ 未找到歌曲")
         return
@@ -1153,7 +1220,15 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
         
         # 查找该歌曲的成绩
         for record in records["records"]:
-            if record.get("song_id") == song_id:
+            try:
+                record_song_id = int(record.get("song_id"))
+            except (TypeError, ValueError):
+                continue
+            if record_song_id == song_id:
+                try:
+                    level_index = int(record.get("level_index", 0))
+                except (TypeError, ValueError):
+                    level_index = 0
                 # 获取群内昵称
                 group_nickname = await get_group_nickname(bot, qq, group_id)
                 ranking_data.append({
@@ -1163,7 +1238,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
                     "fc": record.get("fc", ""),
                     "fs": record.get("fs", ""),
                     "level_label": record.get("level_label", ""),
-                    "level_index": record.get("level_index", 0),
+                    "level_index": level_index,
                     "ds": record.get("ds", 0),
                     "rate": record.get("rate", ""),
                 })
@@ -1176,8 +1251,12 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     if target_difficulty is not None:
         ranking_data = [r for r in ranking_data if r["level_index"] == target_difficulty]
         if not ranking_data:
-            difficulty_names = ["绿", "黄", "红", "紫", "白"]
-            await query_ranking.finish(f"本群暂无人游玩过《{song_title}》的 {difficulty_names[target_difficulty]} 难度！")
+            difficulty_name = _RANKING_DIFFICULTY_NAMES.get(
+                target_difficulty, str(target_difficulty)
+            )
+            await query_ranking.finish(
+                f"本群暂无人游玩过《{song_title}》的 {difficulty_name} 难度！"
+            )
             return
     else:
         # 默认：只显示最高难度的成绩
@@ -1212,12 +1291,15 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     
     # 获取歌曲信息
     try:
-        song = await api.find_song(query)
+        song, search_hint = await _resolve_song_query(query)
     except Exception as e:
         logger.error(f"查找歌曲时出错: {e}")
         await query_song_info.finish("❌ 查询失败，请稍后重试！")
         return
     
+    if search_hint:
+        await query_song_info.finish(f"❌ {search_hint}")
+        return
     if not song:
         await query_song_info.finish("❌ 未找到歌曲，请检查歌曲名称或尝试其他关键词")
         return
@@ -1289,12 +1371,15 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
         return
 
     try:
-        song = await api.find_song(song_query)
+        song, search_hint = await _resolve_song_query(song_query)
     except Exception as e:
         logger.error(f"查找歌曲时出错: {e}")
         await add_alias_command.finish("❌ 查询失败，请稍后重试！")
         return
 
+    if search_hint:
+        await add_alias_command.finish(f"❌ {search_hint}")
+        return
     if not song:
         await add_alias_command.finish("❌ 未找到对应歌曲，请检查输入。")
         return
@@ -1363,12 +1448,15 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
         return
 
     try:
-        song = await api.find_song(song_query)
+        song, search_hint = await _resolve_song_query(song_query)
     except Exception as e:
         logger.error(f"查找歌曲时出错: {e}")
         await remove_alias_command.finish("❌ 查询失败，请稍后重试！")
         return
 
+    if search_hint:
+        await remove_alias_command.finish(f"❌ {search_hint}")
+        return
     if not song:
         await remove_alias_command.finish("❌ 未找到对应歌曲，请检查输入。")
         return
