@@ -106,7 +106,7 @@ def _ensure_static_resources():
     d = ImageDraw.Draw(tmp)
     font_small = _get_font(18)
     _TYPE_WIDTHS = {}
-    for t in ("DX谱面", "标准谱面", "宴会场"):
+    for t in ("DX谱面", "标准谱面", "宴会场", "🤝协力谱面"):
         bbox = d.textbbox((0, 0), t, font=font_small)
         _TYPE_WIDTHS[t] = (bbox[2] - bbox[0]) + 20
 
@@ -354,10 +354,11 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     gap = 10
     
     # 类型标签
+    is_utage = type_text == "宴会场"
     is_cooperative_utage = is_cooperative_utage_song(song)
-    if type_text == "宴会场" and not is_cooperative_utage:
-        type_bg = (238, 228, 250)
-        type_text_color = (135, 85, 180)
+    if is_utage:
+        type_bg = (255, 240, 210)
+        type_text_color = (210, 130, 40)
     elif type_text == "DX谱面":
         type_bg = (255, 228, 225)
         type_text_color = (220, 100, 100)
@@ -367,27 +368,35 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     
     type_width = _TYPE_WIDTHS[type_text]
     
-    if is_cooperative_utage:
-        # 协力谱面使用左右蓝红双色，分别对应 1P/2P。
-        tag_image = Image.new("RGB", (type_width, tag_height), (91, 171, 255))
-        tag_draw = ImageDraw.Draw(tag_image)
-        tag_draw.rectangle(
-            [(type_width // 2, 0), (type_width, tag_height)],
-            fill=(255, 112, 135),
-        )
-        tag_mask = Image.new("L", (type_width, tag_height), 0)
-        ImageDraw.Draw(tag_mask).rounded_rectangle(
-            [(0, 0), (type_width - 1, tag_height - 1)], radius=8, fill=255
-        )
-        img.paste(tag_image, (tag_x, tags_row1_y), tag_mask)
-        type_text_color = (255, 255, 255)
-    else:
-        draw.rounded_rectangle(
-            [(tag_x, tags_row1_y), (tag_x + type_width, tags_row1_y + tag_height)],
-            radius=8, fill=type_bg
-        )
+    draw.rounded_rectangle(
+        [(tag_x, tags_row1_y), (tag_x + type_width, tags_row1_y + tag_height)],
+        radius=8, fill=type_bg
+    )
     draw.text((tag_x + type_width // 2, tags_row1_y + tag_height // 2), type_text,
              font=font_small, fill=type_text_color, anchor="mm")
+
+    if is_cooperative_utage:
+        cooperative_text = "🤝协力谱面"
+        cooperative_x = tag_x + type_width + gap
+        cooperative_width = _TYPE_WIDTHS[cooperative_text]
+        draw.rounded_rectangle(
+            [
+                (cooperative_x, tags_row1_y),
+                (cooperative_x + cooperative_width, tags_row1_y + tag_height),
+            ],
+            radius=8,
+            fill=(235, 241, 250),
+        )
+        pilmoji.text(
+            (
+                cooperative_x + cooperative_width // 2,
+                tags_row1_y + tag_height // 2,
+            ),
+            cooperative_text,
+            font=font_small,
+            fill=(80, 105, 145),
+            anchor="mm",
+        )
     
     # 版本标签（如"DX2025"）- 简化处理，暂时不显示具体版本
     
@@ -440,13 +449,28 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
             # 绘制定数方块
             box_color = diff_colors_light[i] if i < len(diff_colors_light) else (220, 220, 220)
             text_color = diff_text_colors[i] if i < len(diff_text_colors) else (100, 100, 100)
+            border_color = diff_border_colors[i] if i < len(diff_border_colors) else (100, 100, 100)
+
+            if is_utage:
+                if is_cooperative_utage:
+                    # 协力宴谱的两个难度方块分别代表 1P（蓝）和 2P（红）。
+                    utage_palettes = (
+                        ((220, 238, 255), (65, 130, 205), (40, 105, 180)),
+                        ((255, 225, 230), (205, 75, 95), (175, 45, 70)),
+                    )
+                    palette_index = min(i, len(utage_palettes) - 1)
+                    box_color, text_color, border_color = utage_palettes[palette_index]
+                else:
+                    # 单难度宴谱使用独立的紫色难度标签。
+                    box_color = (238, 228, 250)
+                    text_color = (135, 85, 180)
+                    border_color = (100, 50, 150)
             
             # 判断是否是当前查询的难度
             is_current = (i == current_level_index)
             
             if is_current:
                 # 当前难度：添加对应颜色的深色边框
-                border_color = diff_border_colors[i] if i < len(diff_border_colors) else (100, 100, 100)
                 draw.rounded_rectangle(
                     [(box_x, tags_row2_y), (box_x + ds_box_size, tags_row2_y + ds_box_size)],
                     radius=10, fill=box_color, outline=border_color, width=3
