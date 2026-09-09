@@ -38,6 +38,8 @@ class LxnsOAuthManager:
 
     TOKEN_ENDPOINT = "/api/v0/oauth/token"
     AUTHORIZE_ENDPOINT = "/oauth/authorize"
+    # 落雪“无回调地址”应用使用 OAuth 标准 OOB URI；授权页会直接显示 code。
+    NO_CALLBACK_REDIRECT_URI = "urn:ietf:wg:oauth:2.0:oob"
 
     def __init__(
         self,
@@ -189,6 +191,7 @@ class LxnsOAuthManager:
             {
                 "response_type": "code",
                 "client_id": self.client_id,
+                "redirect_uri": self.NO_CALLBACK_REDIRECT_URI,
                 "scope": self.scope,
                 "state": state,
             }
@@ -246,6 +249,7 @@ class LxnsOAuthManager:
                 "client_secret": self.client_secret,
                 "grant_type": "authorization_code",
                 "code": code,
+                "redirect_uri": self.NO_CALLBACK_REDIRECT_URI,
             }
         )
         await self._save_token(qq, payload)
