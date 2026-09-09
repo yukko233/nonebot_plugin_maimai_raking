@@ -270,10 +270,15 @@ async def _resolve_ranking_query(
     target_difficulty = None
     song_query = query
     if len(parts) > 1:
-        difficulty_token = _normalize_command_token(parts[-1])
-        target_difficulty = _RANKING_DIFFICULTIES.get(difficulty_token)
-        if target_difficulty is not None:
-            song_query = " ".join(parts[:-1]).strip()
+        difficulty_options = [(1, parts[-1])]
+        if len(parts) > 2:
+            difficulty_options.insert(0, (2, " ".join(parts[-2:])))
+        for token_count, raw_token in difficulty_options:
+            difficulty_token = _normalize_command_token(raw_token)
+            target_difficulty = _RANKING_DIFFICULTIES.get(difficulty_token)
+            if target_difficulty is not None:
+                song_query = " ".join(parts[:-token_count]).strip()
+                break
 
     results = full_results if song_query == query else await api.search_songs(song_query, limit=5)
     if not results:
