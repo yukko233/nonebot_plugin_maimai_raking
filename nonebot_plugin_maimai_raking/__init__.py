@@ -26,6 +26,7 @@ require("nonebot_plugin_localstore")
 from .config import Config
 from .database import Database
 from .api import MaimaiAPI, SongSearchResult
+from .song_utils import is_utage_song, split_utage_title
 from .oauth import (
     OAuthConsentRequired,
     OAuthError,
@@ -241,13 +242,30 @@ _RANKING_DIFFICULTY_NAMES = {
 
 def _format_song_candidates(results: List[SongSearchResult]) -> str:
     candidates = []
-    for result in results[:5]:
+    for result in results:
         song = result.song
+        if is_utage_song(song):
+            continue
         candidates.append(f"- {song.get('title', '未知歌曲')}（ID: {song.get('id', '未知')}）")
+        if len(candidates) >= 5:
+            break
     return (
         "匹配到多个歌曲，请使用更完整的歌曲名、别名或 ID：\n"
         + "\n".join(candidates)
     )
+
+
+def _format_utage_candidates(results: List[SongSearchResult], base_query: str) -> str:
+    candidates = []
+    for result in results[:5]:
+        song = result.song
+        title_parts = split_utage_title(song.get("title"))
+        marker = title_parts[0] if title_parts else "宴"
+        candidates.append(
+            f"- {song.get('title', '未知宴谱')}（查询：{base_query} {marker}，"
+            f"ID: {song.get('id', '未知')}）"
+        )
+    return "该原歌有多个宴谱，请使用方括号内的标签区分：\n" + "\n".join(candidates)
 
 
 async def _resolve_song_query(query: str) -> Tuple[Optional[dict], Optional[str]]:
@@ -275,6 +293,8 @@ async def _resolve_ranking_query(
     parts = query.split()
     target_difficulty = None
     song_query = query
+    utage_requested = False
+    utage_marker = None
     if len(parts) > 1:
         difficulty_options = [(1, parts[-1])]
         if len(parts) > 2:
@@ -284,13 +304,36 @@ async def _resolve_ranking_query(
             target_difficulty = _RANKING_DIFFICULTIES.get(difficulty_token)
             if target_difficulty is not None:
                 song_query = " ".join(parts[:-token_count]).strip()
+                if target_difficulty == 10:
+                    utage_requested = True
+                    target_difficulty = None
                 break
 
-    results = full_results if song_query == query else await api.search_songs(song_query, limit=5)
+        if song_query == query:
+            possible_marker = api._normalize_search_text(parts[-1], compact=True)
+            if possible_marker in api.get_utage_markers():
+                utage_requested = True
+                utage_marker = parts[-1]
+                song_query = " ".join(parts[:-1]).strip()
+
+    results = (
+        full_results
+        if song_query == query
+        else await api.search_songs(song_query, limit=5)
+    )
     if not results:
         return None, target_difficulty, None
     if api.is_ambiguous_song_search(results):
         return None, target_difficulty, _format_song_candidates(results)
+    if utage_requested:
+        if is_utage_song(results[0].song):
+            return results[0].song, None, None
+        utage_results = api.get_utage_variants(results[0].song, utage_marker)
+        if not utage_results:
+            return None, None, None
+        if len(utage_results) > 1:
+            return None, None, _format_utage_candidates(utage_results, song_query)
+        return utage_results[0].song, None, None
     return results[0].song, target_difficulty, None
 
 
@@ -1194,7 +1237,12 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     
     query = args.extract_plain_text().strip()
     if not query:
-        await query_ranking.finish("请输入歌曲名称、别名或 ID！\n例如: wmrk 群青\n可选难度: wmrk 群青 紫")
+        await query_ranking.finish(
+            "请输入歌曲名称、别名或 ID！\n"
+            "例如: wmrk 群青\n"
+            "可选难度: wmrk 群青 紫\n"
+            "宴谱: wmrk 原歌名/别名 宴（多个宴谱可用方括号内标签区分）"
+        )
         return
     
     # 获取歌曲信息，并安全解析可选难度参数。

@@ -12,6 +12,8 @@ import asyncio
 import hashlib
 import sqlite3
 
+from .song_utils import is_cooperative_utage_song, is_utage_song
+
 class CachedEmojiSource(GoogleEmojiSource):
     """带 SQLite 数据库缓存的 Google Emoji 图片来源
 
@@ -82,13 +84,7 @@ _TYPE_WIDTHS: Optional[dict] = None
 
 def get_song_type_display(song: dict) -> str:
     """返回歌曲在用户界面中应显示的谱面类型。"""
-    try:
-        if int(song.get("id", 0)) >= 100000:
-            return "宴会场"
-    except (TypeError, ValueError):
-        pass
-    category = str(song.get("category") or song.get("chartType") or "").strip()
-    if category.casefold() in {"utage", "宴会场"}:
+    if is_utage_song(song):
         return "宴会场"
     return "DX谱面" if str(song.get("type", "DX")).upper() == "DX" else "标准谱面"
 
@@ -358,7 +354,8 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     gap = 10
     
     # 类型标签
-    if type_text == "宴会场":
+    is_cooperative_utage = is_cooperative_utage_song(song)
+    if type_text == "宴会场" and not is_cooperative_utage:
         type_bg = (238, 228, 250)
         type_text_color = (135, 85, 180)
     elif type_text == "DX谱面":
@@ -370,10 +367,25 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     
     type_width = _TYPE_WIDTHS[type_text]
     
-    draw.rounded_rectangle(
-        [(tag_x, tags_row1_y), (tag_x + type_width, tags_row1_y + tag_height)],
-        radius=8, fill=type_bg
-    )
+    if is_cooperative_utage:
+        # 协力谱面使用左右蓝红双色，分别对应 1P/2P。
+        tag_image = Image.new("RGB", (type_width, tag_height), (91, 171, 255))
+        tag_draw = ImageDraw.Draw(tag_image)
+        tag_draw.rectangle(
+            [(type_width // 2, 0), (type_width, tag_height)],
+            fill=(255, 112, 135),
+        )
+        tag_mask = Image.new("L", (type_width, tag_height), 0)
+        ImageDraw.Draw(tag_mask).rounded_rectangle(
+            [(0, 0), (type_width - 1, tag_height - 1)], radius=8, fill=255
+        )
+        img.paste(tag_image, (tag_x, tags_row1_y), tag_mask)
+        type_text_color = (255, 255, 255)
+    else:
+        draw.rounded_rectangle(
+            [(tag_x, tags_row1_y), (tag_x + type_width, tags_row1_y + tag_height)],
+            radius=8, fill=type_bg
+        )
     draw.text((tag_x + type_width // 2, tags_row1_y + tag_height // 2), type_text,
              font=font_small, fill=type_text_color, anchor="mm")
     

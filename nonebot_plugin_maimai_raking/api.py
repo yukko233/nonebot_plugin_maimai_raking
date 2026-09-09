@@ -5,6 +5,7 @@ import httpx
 import json
 import sqlite3
 import unicodedata
+from opencc import OpenCC
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -17,6 +18,10 @@ from .lxns_oauth import (
     LxnsOAuthManager,
     LxnsOAuthQuotaExceeded,
 )
+from .song_utils import is_utage_song, split_utage_title
+
+
+_TRADITIONAL_TO_SIMPLIFIED = OpenCC("t2s")
 
 
 @dataclass(frozen=True)
@@ -160,6 +165,7 @@ class MaimaiAPI:
         if not isinstance(title, str):
             return ""
         normalized = unicodedata.normalize("NFKC", title).casefold().strip()
+        normalized = _TRADITIONAL_TO_SIMPLIFIED.convert(normalized)
         return "".join(char for char in normalized if not char.isspace())
 
     @staticmethod
@@ -168,6 +174,7 @@ class MaimaiAPI:
         if value is None:
             return ""
         normalized = unicodedata.normalize("NFKC", str(value)).casefold().strip()
+        normalized = _TRADITIONAL_TO_SIMPLIFIED.convert(normalized)
         if compact:
             return "".join(
                 char
@@ -917,8 +924,14 @@ class MaimaiAPI:
             return await self._get_lxns_player_records(qq)
         return await self._get_divingfish_player_records(qq)
 
-    async def search_songs(self, query: str, limit: int = 5) -> List[SongSearchResult]:
-        """搜索歌曲并返回按匹配质量排序的候选结果。"""
+    async def search_songs(
+        self, query: str, limit: int = 5, *, include_utage: bool = False
+    ) -> List[SongSearchResult]:
+        """搜索歌曲并返回按匹配质量排序的候选结果。
+
+        普通标题与别名搜索不让宴谱参与相近结果排序；宴谱仍可用精确 ID
+        查询，或由排行榜的“原歌 + 宴谱标签”入口解析。
+        """
         query = str(query or "").strip()
         if not query:
             return []
@@ -966,6 +979,8 @@ class MaimaiAPI:
                 add_match(song_id, songs_by_id[song_id], 2000, "id_exact")
 
         for song_id, song in songs_by_id.items():
+            if not include_utage and is_utage_song(song):
+                continue
             title = song.get("title")
             if not isinstance(title, str):
                 continue
@@ -984,7 +999,7 @@ class MaimaiAPI:
             except (TypeError, ValueError):
                 continue
             song = songs_by_id.get(song_id)
-            if song is None:
+            if song is None or (not include_utage and is_utage_song(song)):
                 continue
             aliases = alias_item.get("Alias")
             if not isinstance(aliases, list):
@@ -1009,6 +1024,74 @@ class MaimaiAPI:
             ),
         )
         return results[:result_limit]
+
+    def get_utage_markers(self) -> set[str]:
+        """返回曲库中所有宴谱方括号标签的规范化值。"""
+        markers = set()
+        for song in self.music_data:
+            if not isinstance(song, dict) or not is_utage_song(song):
+                continue
+            title_parts = split_utage_title(song.get("title"))
+            if title_parts is not None:
+                markers.add(self._normalize_search_text(title_parts[0], compact=True))
+        return markers
+
+    def get_utage_variants(
+        self, base_song: dict, marker: Optional[str] = None
+    ) -> List[SongSearchResult]:
+        """按原歌和可选方括号标签查找对应宴谱。"""
+        base_title = self._normalize_search_text(base_song.get("title"))
+        base_compact = self._normalize_search_text(
+            base_song.get("title"), compact=True
+        )
+        marker_compact = (
+            self._normalize_search_text(marker, compact=True) if marker else ""
+        )
+        if not base_title or not base_compact:
+            return []
+
+        matches = []
+        for song in self.music_data:
+            if not isinstance(song, dict) or not is_utage_song(song):
+                continue
+            title_parts = split_utage_title(song.get("title"))
+            if title_parts is None:
+                continue
+            candidate_marker, candidate_title = title_parts
+            if marker_compact and self._normalize_search_text(
+                candidate_marker, compact=True
+            ) != marker_compact:
+                continue
+
+            candidate_normalized = self._normalize_search_text(candidate_title)
+            candidate_compact = self._normalize_search_text(
+                candidate_title, compact=True
+            )
+            exact = candidate_compact == base_compact
+            parenthesized_variant = (
+                candidate_normalized.startswith(base_title)
+                and candidate_normalized[len(base_title) :]
+                .lstrip()
+                .startswith(("(", "["))
+            )
+            if not exact and not parenthesized_variant:
+                continue
+            matches.append(
+                SongSearchResult(
+                    song=song,
+                    score=1100 if exact else 1050,
+                    matched_by="utage_base_title",
+                )
+            )
+
+        return sorted(
+            matches,
+            key=lambda result: (
+                -result.score,
+                self._normalize_search_text(result.song.get("title")),
+                str(result.song.get("id", "")),
+            ),
+        )
 
     @staticmethod
     def is_ambiguous_song_search(results: List[SongSearchResult]) -> bool:
