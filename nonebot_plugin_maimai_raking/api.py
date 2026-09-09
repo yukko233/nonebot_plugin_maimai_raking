@@ -22,6 +22,16 @@ from .song_utils import is_utage_song, split_utage_title
 
 
 _TRADITIONAL_TO_SIMPLIFIED = OpenCC("t2s")
+# OpenCC 的繁简转换不会处理日文新字体；宴谱标签使用了这些字形，
+# 搜索时需要继续归一到玩家常用的简体写法。
+_SEARCH_VARIANT_TRANSLATION = str.maketrans(
+    {
+        "発": "发",
+        "覚": "觉",
+        "両": "两",
+        "蔵": "藏",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -166,6 +176,7 @@ class MaimaiAPI:
             return ""
         normalized = unicodedata.normalize("NFKC", title).casefold().strip()
         normalized = _TRADITIONAL_TO_SIMPLIFIED.convert(normalized)
+        normalized = normalized.translate(_SEARCH_VARIANT_TRANSLATION)
         return "".join(char for char in normalized if not char.isspace())
 
     @staticmethod
@@ -175,6 +186,7 @@ class MaimaiAPI:
             return ""
         normalized = unicodedata.normalize("NFKC", str(value)).casefold().strip()
         normalized = _TRADITIONAL_TO_SIMPLIFIED.convert(normalized)
+        normalized = normalized.translate(_SEARCH_VARIANT_TRANSLATION)
         if compact:
             return "".join(
                 char
