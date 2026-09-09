@@ -55,9 +55,19 @@ class Database:
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     qq TEXT PRIMARY KEY,
-                    joined_at TEXT NOT NULL
+                    joined_at TEXT NOT NULL,
+                    data_source TEXT NOT NULL DEFAULT 'divingfish'
                 )
             """)
+
+            # 兼容旧版：为已有用户补充成绩数据源选择，默认使用水鱼。
+            try:
+                await db.execute(
+                    "ALTER TABLE users ADD COLUMN data_source TEXT NOT NULL DEFAULT 'divingfish'"
+                )
+                logger.info("已为users表添加data_source列")
+            except Exception:
+                pass
 
             # 创建用户-群组关系表
             await db.execute("""
@@ -99,6 +109,20 @@ class Database:
                     refresh_token TEXT,
                     expires_at INTEGER NOT NULL DEFAULT 0,
                     subject TEXT,
+                    scope TEXT,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (qq) REFERENCES users(qq)
+                )
+            """)
+
+            # 落雪 OAuth 令牌单独存表，避免改变旧版水鱼 oauth_tokens 的主键结构，
+            # 同时允许同一个 QQ 保留两个数据源的授权。
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS lxns_oauth_tokens (
+                    qq TEXT PRIMARY KEY,
+                    access_token TEXT,
+                    refresh_token TEXT,
+                    expires_at INTEGER NOT NULL DEFAULT 0,
                     scope TEXT,
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY (qq) REFERENCES users(qq)
@@ -255,6 +279,42 @@ class Database:
                 return []
 
     # ==================== 用户管理 ====================
+
+    async def get_user_data_source(self, qq: str) -> str:
+        """获取用户选择的成绩数据源，旧用户默认使用水鱼。"""
+        async with aiosqlite.connect(self.db_file) as db:
+            db.row_factory = sqlite3.Row
+            try:
+                cursor = await db.execute(
+                    "SELECT data_source FROM users WHERE qq = ?",
+                    (str(qq),),
+                )
+                row = await cursor.fetchone()
+                source = row["data_source"] if row else None
+                return source if source in {"divingfish", "lxns"} else "divingfish"
+            except Exception as e:
+                logger.error(f"读取用户 {qq} 的成绩数据源失败: {e}")
+                return "divingfish"
+
+    async def set_user_data_source(self, qq: str, source: str):
+        """保存用户的成绩数据源选择。"""
+        source = str(source).strip().lower()
+        if source not in {"divingfish", "lxns"}:
+            raise ValueError(f"不支持的成绩数据源: {source}")
+        async with aiosqlite.connect(self.db_file) as db:
+            try:
+                await db.execute(
+                    "INSERT OR IGNORE INTO users (qq, joined_at, data_source) VALUES (?, ?, ?)",
+                    (str(qq), datetime.now().isoformat(), source),
+                )
+                await db.execute(
+                    "UPDATE users SET data_source = ? WHERE qq = ?",
+                    (source, str(qq)),
+                )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
 
     async def add_user_to_group(self, qq: str, group_id: str):
         """添加用户到群组"""
@@ -558,12 +618,112 @@ class Database:
         """删除本地 OAuth 授权。"""
         await self.clear_oauth_tokens(qq)
 
+    async def get_lxns_oauth_tokens(self, qq: str) -> Optional[dict]:
+        """读取用户的落雪 OAuth Token。"""
+        async with aiosqlite.connect(self.db_file) as db:
+            db.row_factory = sqlite3.Row
+            try:
+                cursor = await db.execute(
+                    "SELECT qq, access_token, refresh_token, expires_at, scope "
+                    "FROM lxns_oauth_tokens WHERE qq = ?",
+                    (str(qq),),
+                )
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+            except Exception as e:
+                logger.error(f"读取用户 {qq} 的落雪 OAuth 授权失败: {e}")
+                return None
+
+    async def save_lxns_oauth_tokens(
+        self,
+        qq: str,
+        access_token: str,
+        refresh_token: Optional[str],
+        expires_at: int,
+        scope: str,
+    ):
+        """保存或更新用户的落雪 OAuth Token。"""
+        async with aiosqlite.connect(self.db_file) as db:
+            try:
+                await db.execute(
+                    "INSERT OR IGNORE INTO users (qq, joined_at) VALUES (?, ?)",
+                    (str(qq), datetime.now().isoformat()),
+                )
+                await db.execute(
+                    """
+                    INSERT INTO lxns_oauth_tokens
+                        (qq, access_token, refresh_token, expires_at, scope, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(qq) DO UPDATE SET
+                        access_token = excluded.access_token,
+                        refresh_token = excluded.refresh_token,
+                        expires_at = excluded.expires_at,
+                        scope = excluded.scope,
+                        updated_at = excluded.updated_at
+                    """,
+                    (
+                        str(qq),
+                        access_token,
+                        refresh_token,
+                        int(expires_at),
+                        scope,
+                        datetime.now().isoformat(),
+                    ),
+                )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
+
+    async def clear_lxns_oauth_tokens(self, qq: str):
+        """清除本地落雪 OAuth Token，但保留用户和成绩数据。"""
+        async with aiosqlite.connect(self.db_file) as db:
+            await db.execute(
+                "DELETE FROM lxns_oauth_tokens WHERE qq = ?",
+                (str(qq),),
+            )
+            await db.commit()
+
     async def update_user_records(self, qq: str, records: dict):
         """更新用户成绩"""
         async with aiosqlite.connect(self.db_file) as db:
             db.row_factory = sqlite3.Row
             try:
-                data_json = json.dumps(records, ensure_ascii=False)
+                # 同一个用户可以在水鱼和落雪之间切换；保留两个来源的最近
+                # 一份缓存，切换后无需因为覆盖缓存而重新丢失另一来源的数据。
+                stored_records = dict(records)
+                stored_records.pop("_sources", None)
+                source = stored_records.get("source", "divingfish")
+                cursor = await db.execute(
+                    "SELECT data FROM records WHERE qq = ?",
+                    (str(qq),),
+                )
+                old_row = await cursor.fetchone()
+                source_records: Dict[str, dict] = {}
+                if old_row:
+                    try:
+                        old_data = json.loads(old_row["data"])
+                    except (TypeError, ValueError):
+                        old_data = None
+                    if isinstance(old_data, dict):
+                        old_sources = old_data.get("_sources")
+                        if isinstance(old_sources, dict):
+                            source_records.update(
+                                {
+                                    str(key): {k: v for k, v in value.items() if k != "_sources"}
+                                    for key, value in old_sources.items()
+                                    if isinstance(value, dict)
+                                }
+                            )
+                        old_source = old_data.get("source", "divingfish")
+                        if "records" in old_data and isinstance(old_source, str):
+                            source_records.setdefault(
+                                old_source,
+                                {k: v for k, v in old_data.items() if k != "_sources"},
+                            )
+                source_records[str(source)] = dict(stored_records)
+                stored_records["_sources"] = source_records
+                data_json = json.dumps(stored_records, ensure_ascii=False)
                 updated_at = datetime.now().isoformat()
                 await db.execute(
                     "INSERT OR REPLACE INTO records (qq, data, updated_at) VALUES (?, ?, ?)",
@@ -575,7 +735,7 @@ class Database:
                 await db.rollback()
                 logger.error(f"更新用户 {qq} 的成绩失败: {e}")
 
-    async def get_user_records(self, qq: str) -> Optional[dict]:
+    async def get_user_records(self, qq: str, source: Optional[str] = None) -> Optional[dict]:
         """获取用户成绩"""
         async with aiosqlite.connect(self.db_file) as db:
             db.row_factory = sqlite3.Row
@@ -586,7 +746,16 @@ class Database:
                 )
                 row = await cursor.fetchone()
                 if row:
-                    return json.loads(row["data"])
+                    data = json.loads(row["data"])
+                    if source and isinstance(data, dict):
+                        source_records = data.get("_sources")
+                        if isinstance(source_records, dict):
+                            selected = source_records.get(str(source))
+                            if isinstance(selected, dict):
+                                return selected
+                        if data.get("source", "divingfish") != str(source):
+                            return None
+                    return data
                 return None
             except Exception as e:
                 logger.error(f"获取用户 {qq} 的成绩失败: {e}")

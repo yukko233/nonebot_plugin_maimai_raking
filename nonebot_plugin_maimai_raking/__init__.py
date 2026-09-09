@@ -32,6 +32,13 @@ from .oauth import (
     OAuthQuotaExceeded,
     OAuthRateLimited,
 )
+from .lxns_oauth import (
+    LxnsOAuthConsentRequired,
+    LxnsOAuthError,
+    LxnsOAuthManager,
+    LxnsOAuthNotConfigured,
+    LxnsOAuthQuotaExceeded,
+)
 from .render import render_ranking_image, clear_cover_memory_cache, get_help_image, pre_render_help_images
 
 __plugin_meta__ = PluginMetadata(
@@ -55,6 +62,9 @@ __plugin_meta__ = PluginMetadata(
     用户命令：
     - 绑定水鱼账号
     - 解绑水鱼账号
+    - 绑定落雪账号
+    - 解绑落雪账号
+    - 切换查分器 [水鱼/落雪]
     - 加入排行榜 [QQ号/@用户]
     - 退出排行榜 [QQ号/@用户]
     - 刷新成绩
@@ -84,13 +94,35 @@ oauth = OAuthManager(
     scope=config.maimai_oauth_scope,
     authorization_server=config.maimai_oauth_base_url,
 )
-api = MaimaiAPI(oauth)
+lxns_oauth = LxnsOAuthManager(
+    db=db,
+    client_id=config.maimai_lxns_oauth_client_id,
+    client_secret=config.maimai_lxns_oauth_client_secret,
+    redirect_uri=config.maimai_lxns_oauth_redirect_uri,
+    scope=config.maimai_lxns_oauth_scope,
+    base_url=config.maimai_lxns_oauth_base_url,
+)
+api = MaimaiAPI(oauth, lxns_oauth)
+
+SOURCE_DIVINGFISH = "divingfish"
+SOURCE_LXNS = "lxns"
+SOURCE_LABELS = {
+    SOURCE_DIVINGFISH: "水鱼",
+    SOURCE_LXNS: "落雪",
+}
 
 
 def _oauth_bind_prompt() -> str:
     return (
         "请先绑定水鱼账号：发送「绑定水鱼账号」获取授权链接。\n"
         "授权完成后再重试本命令。"
+    )
+
+
+def _lxns_bind_prompt() -> str:
+    return (
+        "请先绑定落雪账号：发送「绑定落雪账号」获取授权链接，"
+        "完成授权后将授权码发回 Bot。"
     )
 
 
@@ -111,6 +143,19 @@ def _oauth_binding_message(qq: str, device: dict, retry_hint: str) -> str:
 
 
 def _oauth_error_message(error: OAuthError) -> str:
+    if isinstance(error, LxnsOAuthNotConfigured):
+        return (
+            "❌ 插件尚未配置落雪 OAuth 应用，请联系管理员设置 client_id、"
+            "client_secret 和 redirect_uri。"
+        )
+    if isinstance(error, LxnsOAuthConsentRequired):
+        return f"❌ 当前落雪授权未完成，需要重新授权。\n{_lxns_bind_prompt()}"
+    if isinstance(error, LxnsOAuthQuotaExceeded):
+        return "❌ 落雪 OAuth 请求过于频繁，请稍后重试。"
+    if isinstance(error, LxnsOAuthError):
+        if error.code in {"binding_session_missing", "invalid_state"}:
+            return f"❌ {error.message}"
+        return "❌ 落雪 OAuth 请求失败，请稍后重试。"
     if isinstance(error, OAuthNotConfigured):
         return "❌ 插件尚未配置水鱼 OAuth 应用，请联系管理员设置 client_id 和 client_secret。"
     if isinstance(error, OAuthConsentRequired):
@@ -120,6 +165,13 @@ def _oauth_error_message(error: OAuthError) -> str:
     if isinstance(error, OAuthRateLimited):
         return "❌ 水鱼 OAuth 换票过于频繁，请稍后再试。"
     return "❌ 水鱼 OAuth 请求失败，请稍后重试。"
+
+
+async def _get_player_records_for_user(qq: str):
+    """按用户设置的数据源获取成绩。"""
+    source = await db.get_user_data_source(str(qq))
+    records = await api.get_player_records(str(qq), source=source)
+    return source, records
 
 
 async def _delete_sent_message(bot: Bot, send_result):
@@ -287,6 +339,143 @@ async def _(event):
         return
     await unbind_maimai_account.finish("✅ 已清除本地水鱼授权并请求撤销远端 Token。")
 
+
+bind_lxns_account = on_command(
+    "绑定落雪账号",
+    aliases={"落雪授权", "绑定落雪", "绑定lxns", "lxbind"},
+    priority=5,
+    block=True,
+)
+
+
+@bind_lxns_account.handle()
+async def _(event, args: Message = CommandArg()):
+    """使用授权码流程绑定当前 QQ 的落雪账号。"""
+    user_id = str(event.user_id)
+    text = args.extract_plain_text().strip()
+
+    if not text:
+        try:
+            authorization_url = lxns_oauth.build_authorization_url(user_id)
+        except OAuthError as e:
+            await bind_lxns_account.finish(_oauth_error_message(e))
+            return
+        await bind_lxns_account.finish(
+            "请在浏览器中打开下面的链接完成落雪账号授权：\n"
+            f"{authorization_url}\n"
+            "授权完成后，请发送「绑定落雪账号 授权码」；也可以直接把完整回调链接作为参数发送。"
+        )
+        return
+
+    code, state = lxns_oauth.extract_authorization_response(text)
+    if not code:
+        await bind_lxns_account.finish(
+            "❌ 未识别到有效的落雪授权码，请发送授权码或完整回调链接。"
+        )
+        return
+
+    try:
+        await lxns_oauth.exchange_code(user_id, code, state)
+    except OAuthError as e:
+        await bind_lxns_account.finish(_oauth_error_message(e))
+        return
+    except Exception as e:
+        logger.error(f"绑定用户 {user_id} 的落雪账号失败: {e}")
+        await bind_lxns_account.finish("❌ 落雪账号绑定失败，请稍后重试！")
+        return
+
+    await bind_lxns_account.finish(
+        "✅ 落雪账号绑定成功！现在可以发送「切换查分器 落雪」并刷新成绩。"
+    )
+
+
+unbind_lxns_account = on_command(
+    "解绑落雪账号",
+    aliases={"取消落雪授权", "解绑落雪", "解绑lxns"},
+    priority=5,
+    block=True,
+)
+
+
+@unbind_lxns_account.handle()
+async def _(event):
+    """清除当前 QQ 的落雪 OAuth 授权。"""
+    user_id = str(event.user_id)
+    try:
+        await lxns_oauth.clear_tokens(user_id)
+    except Exception as e:
+        logger.error(f"解绑用户 {user_id} 的落雪账号失败: {e}")
+        await unbind_lxns_account.finish("❌ 解绑失败，请稍后重试！")
+        return
+    await unbind_lxns_account.finish(
+        "✅ 已清除本地落雪授权；如需撤销远端授权，请在落雪账号设置中操作。"
+    )
+
+
+switch_data_source = on_command(
+    "切换查分器",
+    aliases={"查分器", "切换数据源", "数据源"},
+    priority=5,
+    block=True,
+)
+
+
+@switch_data_source.handle()
+async def _(event, args: Message = CommandArg()):
+    """切换当前用户使用的成绩数据源。"""
+    user_id = str(event.user_id)
+    value = args.extract_plain_text().strip().casefold()
+    source_aliases = {
+        "水鱼": SOURCE_DIVINGFISH,
+        "水鱼查分器": SOURCE_DIVINGFISH,
+        "divingfish": SOURCE_DIVINGFISH,
+        "df": SOURCE_DIVINGFISH,
+        "落雪": SOURCE_LXNS,
+        "落雪查分器": SOURCE_LXNS,
+        "lxns": SOURCE_LXNS,
+        "lx": SOURCE_LXNS,
+    }
+
+    if not value:
+        current = await db.get_user_data_source(user_id)
+        await switch_data_source.finish(
+            f"当前查分器：{SOURCE_LABELS[current]}\n"
+            "发送「切换查分器 水鱼」或「切换查分器 落雪」进行切换。"
+        )
+        return
+
+    source = source_aliases.get(value)
+    if source is None:
+        await switch_data_source.finish(
+            "❌ 不支持的数据源，请选择：水鱼 或 落雪。"
+        )
+        return
+
+    if source == SOURCE_LXNS and not lxns_oauth.is_configured:
+        await switch_data_source.finish(
+            "❌ 管理员尚未配置落雪 OAuth，暂时无法使用落雪查分器。"
+        )
+        return
+    if source == SOURCE_DIVINGFISH and not oauth.is_configured:
+        await switch_data_source.finish(
+            "❌ 管理员尚未配置水鱼 OAuth，暂时无法使用水鱼查分器。"
+        )
+        return
+
+    await db.set_user_data_source(user_id, source)
+    token = (
+        await db.get_lxns_oauth_tokens(user_id)
+        if source == SOURCE_LXNS
+        else await db.get_oauth_tokens(user_id)
+    )
+    if not token:
+        bind_prompt = _lxns_bind_prompt() if source == SOURCE_LXNS else _oauth_bind_prompt()
+        await switch_data_source.finish(
+            f"✅ 已切换到{SOURCE_LABELS[source]}查分器。\n{bind_prompt}"
+        )
+        return
+    await switch_data_source.finish(f"✅ 已切换到{SOURCE_LABELS[source]}查分器。")
+
 # ==================== 管理员命令 ====================
 
 enable_ranking = on_command(
@@ -346,7 +535,7 @@ async def _(bot: Bot, event: GroupMessageEvent):
     
     for qq in users:
         try:
-            records = await api.get_player_records(qq)
+            source, records = await _get_player_records_for_user(qq)
             if records:
                 await db.update_user_records(qq, records)
                 success_count += 1
@@ -511,11 +700,11 @@ async def _(bot: Bot, event: GroupMessageEvent):
     
     try:
         # 获取最新成绩
-        records = await api.get_player_records(user_id)
+        source, records = await _get_player_records_for_user(user_id)
         if not records:
             await refresh_records.finish(
                 "❌ 无法获取你的成绩数据！\n"
-                "请确认已同意水鱼查分器用户协议，且网络连接正常。"
+                f"请确认已完成{SOURCE_LABELS.get(source, '当前')}查分器授权并同意用户协议，且网络连接正常。"
             )
             return
         
@@ -676,7 +865,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     
     # 尝试获取用户数据验证
     try:
-        records = await api.get_player_records(qq)
+        source, records = await _get_player_records_for_user(qq)
     except OAuthConsentRequired:
         try:
             device = await oauth.start_device_authorization(qq)
@@ -696,7 +885,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
             # 设备码授权成功后继续当前命令，无需用户再次发送“加入排行榜”。
             await oauth.poll_device_authorization(qq, device)
             await _delete_sent_message(bot, auth_message)
-            records = await api.get_player_records(qq)
+            source, records = await _get_player_records_for_user(qq)
         except OAuthError as e:
             logger.warning(f"用户 {qq} 完成 OAuth 授权后获取成绩失败: {e.code or 'oauth_error'}")
             await join_ranking.finish(_oauth_error_message(e))
@@ -717,7 +906,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     if not records:
         await join_ranking.finish(
             "❌ 无法获取你的成绩数据！\n"
-            "请确认已完成水鱼账号授权、同意查分器用户协议，且 QQ 号输入正确。"
+            f"请确认已完成{SOURCE_LABELS.get(source, '当前')}账号授权、同意查分器用户协议，且 QQ 号输入正确。"
         )
         return
     
@@ -959,7 +1148,8 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     # 收集成绩数据
     ranking_data = []
     for qq in users:
-        records = await db.get_user_records(qq)
+        current_source = await db.get_user_data_source(qq)
+        records = await db.get_user_records(qq, current_source)
         if not records or "records" not in records:
             continue
         
@@ -1290,7 +1480,8 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
     # 收集用户 Rating 数据
     rating_data = []
     for qq in users:
-        records = await db.get_user_records(qq)
+        source = await db.get_user_data_source(qq)
+        records = await db.get_user_records(qq, source)
         if not records:
             continue
         
@@ -1457,7 +1648,7 @@ async def auto_update_records():
             logger.info(f"用户 {qq} 当日已有手动刷新记录，跳过自动更新")
             continue
         try:
-            records = await api.get_player_records(qq)
+            source, records = await _get_player_records_for_user(qq)
             if records:
                 await db.update_user_records(qq, records)
                 success_count += 1
@@ -1562,6 +1753,12 @@ async def _():
             "未配置水鱼 OAuth 应用，完整成绩查询不可用；"
             "请设置 MAIMAI_OAUTH_CLIENT_ID 和 MAIMAI_OAUTH_CLIENT_SECRET"
         )
+    if not lxns_oauth.is_configured:
+        logger.warning(
+            "未配置落雪 OAuth 应用，落雪成绩查询不可用；"
+            "请设置 MAIMAI_LXNS_OAUTH_CLIENT_ID、"
+            "MAIMAI_LXNS_OAUTH_CLIENT_SECRET 和 MAIMAI_LXNS_OAUTH_REDIRECT_URI"
+        )
 
 
 @driver.on_shutdown
@@ -1569,6 +1766,7 @@ async def _shutdown():
     """插件关闭时释放 HTTP 客户端。"""
     await api.close()
     await oauth.close()
+    await lxns_oauth.close()
 
 
 @driver.on_bot_connect

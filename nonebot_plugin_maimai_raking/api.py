@@ -10,6 +10,11 @@ from typing import Optional, Dict, List, Any
 from nonebot.log import logger
 
 from .oauth import OAuthError, OAuthManager, OAuthQuotaExceeded
+from .lxns_oauth import (
+    LxnsOAuthConsentRequired,
+    LxnsOAuthManager,
+    LxnsOAuthQuotaExceeded,
+)
 
 
 class MaimaiAPI:
@@ -38,16 +43,24 @@ class MaimaiAPI:
         "maimai でらっくす PRiSM PLUS": 220,
     }
 
-    def __init__(self, oauth: OAuthManager):
+    def __init__(
+        self,
+        oauth: OAuthManager,
+        lxns_oauth: Optional[LxnsOAuthManager] = None,
+    ):
         """初始化 API 客户端
 
         Args:
             oauth: 水鱼 OAuth 管理器
+            lxns_oauth: 落雪 OAuth 管理器
         """
         import nonebot_plugin_localstore as store
 
         self.oauth = oauth
+        self.lxns_oauth = lxns_oauth
         self.base_url = "https://www.diving-fish.com/api/maimaidxprober"
+        lxns_base_url = getattr(lxns_oauth, "base_url", "https://maimai.lxns.net")
+        self.lxns_base_url = f"{lxns_base_url.rstrip('/')}/api/v0/user/maimai/player"
         self.alias_url = "https://www.yuzuchan.moe/api/maimaidx/maimaidxalias"
         self.alias_lxns_url = "https://maimai.lxns.net/api/v0/maimai/alias/list"
         self.alias_dxrating_url = "https://miruku.dxrating.net/api/v1/aliases"
@@ -589,15 +602,200 @@ class MaimaiAPI:
                         continue
         return None
 
-    async def get_player_records(self, qq: str) -> Optional[Dict[str, Any]]:
-        """获取玩家完整成绩
+    @staticmethod
+    def _lxns_level_index(value: Any) -> int:
+        if isinstance(value, int) and not isinstance(value, bool):
+            return max(0, min(4, value))
+        text = str(value or "").strip().casefold().replace("：", ":")
+        names = {
+            "basic": 0,
+            "advanced": 1,
+            "expert": 2,
+            "master": 3,
+            "remaster": 4,
+            "re:master": 4,
+            "re master": 4,
+        }
+        if text in names:
+            return names[text]
+        try:
+            return max(0, min(4, int(text)))
+        except (TypeError, ValueError):
+            return 0
 
-        Args:
-            qq: 玩家 QQ 号
+    @staticmethod
+    def _lxns_song_type(value: Any) -> str:
+        text = str(value or "").strip().casefold()
+        return {
+            "standard": "SD",
+            "sd": "SD",
+            "dx": "DX",
+            "deluxe": "DX",
+            "utage": "DX",
+        }.get(text, text.upper())
 
-        Returns:
-            玩家成绩数据，失败返回 None
-        """
+    def _find_lxns_song(self, score: dict) -> Optional[dict]:
+        """将落雪统一歌曲 ID 映射到水鱼 music_data 中的歌曲。"""
+        raw_id = score.get("id", score.get("song_id"))
+        try:
+            lxns_id = str(int(raw_id))
+        except (TypeError, ValueError):
+            lxns_id = str(raw_id or "").strip()
+
+        target_type = self._lxns_song_type(score.get("type"))
+        candidates = []
+        for song in self.music_data:
+            if not isinstance(song, dict):
+                continue
+            try:
+                water_id = int(song["id"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            current_lxns_id = (
+                str(water_id)
+                if self.is_utage_chart(water_id)
+                else self._normalize_song_id_for_lxns(
+                    water_id, self._is_post_finale_version(song)
+                )
+            )
+            if current_lxns_id == lxns_id:
+                candidates.append(song)
+
+        typed_candidates = [
+            song for song in candidates
+            if self._lxns_song_type(song.get("type")) == target_type
+        ]
+        if typed_candidates:
+            return typed_candidates[0]
+        if candidates:
+            return candidates[0]
+
+        # ID 规则发生变动时，以歌名作为最后的兼容匹配方式。
+        title = self._normalize_title(score.get("song_name"))
+        if title:
+            title_candidates = [
+                song for song in self.music_data
+                if self._normalize_title(song.get("title")) == title
+            ]
+            typed_candidates = [
+                song for song in title_candidates
+                if self._lxns_song_type(song.get("type")) == target_type
+            ]
+            return (typed_candidates or title_candidates or [None])[0]
+        return None
+
+    async def _get_lxns_player_records(self, qq: str) -> Optional[Dict[str, Any]]:
+        """读取落雪玩家信息和完整成绩，并转换成插件内部统一格式。"""
+        if self.lxns_oauth is None:
+            raise LxnsOAuthConsentRequired(
+                "未初始化落雪 OAuth。", code="not_configured"
+            )
+        if not self.music_data:
+            await self.load_music_data()
+
+        token = await self.lxns_oauth.get_access_token(str(qq))
+        headers = {"Authorization": f"Bearer {token}"}
+
+        async def request(endpoint: str):
+            url = f"{self.lxns_base_url}{endpoint}"
+            response = await self.client.get(url, headers=headers)
+            if response.status_code == 401:
+                # 落雪 Access Token 过期时只刷新并重试一次。
+                token_retry = await self.lxns_oauth.get_access_token(
+                    str(qq), force_refresh=True
+                )
+                response = await self.client.get(
+                    url,
+                    headers={"Authorization": f"Bearer {token_retry}"},
+                )
+                headers["Authorization"] = f"Bearer {token_retry}"
+            if response.status_code == 429:
+                raise LxnsOAuthQuotaExceeded(
+                    "落雪 OAuth 请求过于频繁，请稍后再试。",
+                    code="rate_limited",
+                    status_code=429,
+                )
+            if response.status_code == 401:
+                raise LxnsOAuthConsentRequired(
+                    "落雪 OAuth 授权已失效，请重新绑定落雪账号。",
+                    code="consent_required",
+                    status_code=401,
+                )
+            if response.status_code < 200 or response.status_code >= 300:
+                try:
+                    payload = response.json()
+                    error_msg = payload.get("message")
+                except ValueError:
+                    error_msg = None
+                logger.warning(
+                    f"获取落雪用户 {qq} 成绩失败: "
+                    f"{error_msg or f'HTTP {response.status_code}'}"
+                )
+                return None
+            try:
+                payload = response.json()
+            except ValueError:
+                logger.warning(f"落雪用户 {qq} 成绩响应不是有效 JSON")
+                return None
+            if isinstance(payload, dict) and "data" in payload:
+                return payload.get("data")
+            return payload
+
+        try:
+            player = await request("")
+            scores = await request("/scores")
+            if not isinstance(player, dict) or not isinstance(scores, list):
+                return None
+
+            level_labels = ["Basic", "Advanced", "Expert", "Master", "Re:MASTER"]
+            normalized_records = []
+            for score in scores:
+                if not isinstance(score, dict):
+                    continue
+                level_index = self._lxns_level_index(score.get("level_index"))
+                song = self._find_lxns_song(score)
+                raw_song_id = score.get("id", score.get("song_id"))
+                try:
+                    song_id = int(song["id"]) if song else int(raw_song_id)
+                except (KeyError, TypeError, ValueError):
+                    continue
+
+                ds = 0
+                if song and isinstance(song.get("ds"), list):
+                    try:
+                        ds = float(song["ds"][level_index] or 0)
+                    except (IndexError, TypeError, ValueError):
+                        ds = 0
+
+                normalized_records.append(
+                    {
+                        "song_id": song_id,
+                        "level_index": level_index,
+                        "level_label": level_labels[level_index],
+                        "ds": ds,
+                        "achievements": float(score.get("achievements") or 0),
+                        "fc": score.get("fc") or "",
+                        "fs": score.get("fs") or "",
+                        "rate": score.get("rate") or "",
+                    }
+                )
+
+            return {
+                "nickname": player.get("name") or player.get("nickname") or "未知",
+                "rating": player.get("rating", 0),
+                "records": normalized_records,
+                "source": "lxns",
+            }
+        except OAuthError:
+            raise
+        except httpx.HTTPError as e:
+            logger.error(f"获取落雪用户 {qq} 成绩时网络错误: {e}")
+            return None
+        except (TypeError, ValueError) as e:
+            logger.error(f"获取落雪用户 {qq} 成绩时响应格式错误: {e}")
+            return None
+
+    async def _get_divingfish_player_records(self, qq: str) -> Optional[Dict[str, Any]]:
         token = await self.oauth.get_access_token(str(qq))
         url = f"{self.base_url}/player/records"
         headers = {"Authorization": f"Bearer {token}"}
@@ -614,7 +812,11 @@ class MaimaiAPI:
                 )
 
             if response.status_code == 200:
-                return response.json()
+                payload = response.json()
+                if isinstance(payload, dict):
+                    payload = dict(payload)
+                    payload["source"] = "divingfish"
+                return payload
 
             if response.status_code == 429:
                 raise OAuthQuotaExceeded(
@@ -643,6 +845,16 @@ class MaimaiAPI:
         except (TypeError, ValueError) as e:
             logger.error(f"获取玩家 {qq} 成绩时响应格式错误: {e}")
             return None
+
+    async def get_player_records(
+        self,
+        qq: str,
+        source: str = "divingfish",
+    ) -> Optional[Dict[str, Any]]:
+        """获取玩家完整成绩，支持水鱼和落雪两种 OAuth 数据源。"""
+        if str(source).strip().lower() == "lxns":
+            return await self._get_lxns_player_records(qq)
+        return await self._get_divingfish_player_records(qq)
 
     async def find_song(self, query: str) -> Optional[dict]:
         """查找歌曲

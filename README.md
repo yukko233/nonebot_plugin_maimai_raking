@@ -53,6 +53,16 @@ MAIMAI_OAUTH_SCOPE=prober.records.read
 # 可选，默认值如下
 MAIMAI_OAUTH_BASE_URL=https://auth.diving-fish.com
 
+# 落雪 OAuth 应用配置（需要使用落雪查分器时填写）
+MAIMAI_LXNS_OAUTH_CLIENT_ID=your_lxns_client_id
+MAIMAI_LXNS_OAUTH_CLIENT_SECRET=your_lxns_client_secret
+# 必须与落雪 OAuth 应用登记的回调地址完全一致
+MAIMAI_LXNS_OAUTH_REDIRECT_URI=https://your.example.com/lxns/callback
+# 默认只申请读取舞萌成绩；如应用已申请其它权限可空格分隔填写
+MAIMAI_LXNS_OAUTH_SCOPE=read_player
+# 可选，默认值如下
+MAIMAI_LXNS_OAUTH_BASE_URL=https://maimai.lxns.net
+
 # 数据存储路径（可选，默认使用 nonebot-plugin-localstore 管理的插件数据目录）
 MAIMAI_DATA_PATH=data/maimai_raking
 
@@ -68,6 +78,8 @@ MAIMAI_CACHE_PATH=data/maimai_cache
 4. 将 `client_secret` 仅保存到 Bot 服务端的环境变量中，不要提交到 Git
 
 已有排行榜用户不需要重新录入 QQ：插件会先按 `ref` 摘要尝试换票，并兼容迁移期的 `qq` subject；如果服务端返回 `consent_required`，再让用户执行 `绑定水鱼账号`。
+
+落雪 OAuth 应用请参考[落雪 OAuth 接入指南](https://maimai.lxns.net/docs/oauth-guide)创建，并将登记的回调地址填写到 `MAIMAI_LXNS_OAUTH_REDIRECT_URI`。
 
 ## 📖 使用方法
 
@@ -104,6 +116,9 @@ MAIMAI_CACHE_PATH=data/maimai_cache
 |------|------|
 | `绑定水鱼账号` | 通过 Device Authorization 授权水鱼账号 |
 | `解绑水鱼账号` | 撤销并清除当前 QQ 的水鱼 OAuth 授权 |
+| `绑定落雪账号` | 获取落雪 OAuth 授权链接，完成后提交授权码或回调链接 |
+| `解绑落雪账号` | 清除当前 QQ 的落雪 OAuth 授权 |
+| `切换查分器 [水鱼/落雪]` | 切换当前 QQ 使用的成绩数据源 |
 | `加入排行榜` | 加入排行榜|
 | `退出排行榜` | 退出排行榜|
 | `刷新成绩` | 刷新自己的最新成绩数据 |
@@ -323,9 +338,10 @@ Bot: ✅ 已成功为用户 123456789 加入群 987654321 的排行榜！
 
 ### 使用前提
 
-1. ✅ 用户必须先发送 `绑定水鱼账号`，在浏览器完成水鱼 OAuth 授权
-2. ✅ 用户需要同意水鱼查分器用户协议
-3. ✅ OAuth Access Token 会缓存在插件数据库中，用户可用 `解绑水鱼账号` 撤销
+1. ✅ 使用水鱼时，用户需要先发送 `绑定水鱼账号`，在浏览器完成水鱼 OAuth 授权
+2. ✅ 使用落雪时，用户需要先发送 `绑定落雪账号`，完成授权后将授权码发回 Bot
+3. ✅ 用户需要同意对应查分器的用户协议
+4. ✅ 两个数据源的 OAuth Token 会分别缓存在插件数据库中，用户可使用 `切换查分器 水鱼` 或 `切换查分器 落雪`
 
 ### 功能特点
 
@@ -343,7 +359,8 @@ Bot: ✅ 已成功为用户 123456789 加入群 987654321 的排行榜！
   - `groups` 表 - 群组配置信息
   - `users` 表 - 用户基本信息
   - `user_groups` 表 - 用户-群组关系
-  - `records` 表 - 用户成绩记录
+  - `records` 表 - 用户成绩记录（按数据源保留最近缓存）
+  - `oauth_tokens` / `lxns_oauth_tokens` 表 - 水鱼 / 落雪 OAuth 令牌
   - `custom_aliases` 表 - 自定义歌曲别名
 
 ### 缓存数据库
