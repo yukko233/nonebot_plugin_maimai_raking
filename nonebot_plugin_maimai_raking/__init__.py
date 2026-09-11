@@ -1297,6 +1297,7 @@ async def _(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()):
                     "qq": qq,
                     "nickname": group_nickname,  # 使用群内昵称
                     "achievements": record.get("achievements", 0),
+                    "dxScore": record.get("dxScore", record.get("dx_score", 0)),
                     "fc": record.get("fc", ""),
                     "fs": record.get("fs", ""),
                     "level_label": record.get("level_label", ""),

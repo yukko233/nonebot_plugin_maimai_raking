@@ -110,16 +110,17 @@ def _ensure_static_resources():
         bbox = d.textbbox((0, 0), t, font=font_small)
         _TYPE_WIDTHS[t] = (bbox[2] - bbox[0]) + 20
 
-    # 表头覆盖层（排名 / 玩家 / 成绩 / FC/FS / 评级）
+    # 表头覆盖层（排名 / 玩家 / 成绩 / DX分 / FC/FS / 评级）
     overlay = Image.new("RGBA", (850, 50), (240, 240, 245, 255))
     d = ImageDraw.Draw(overlay)
     font_normal = _get_font(24)
     y = 25
     d.text((70, y), "排名", font=font_normal, fill=(80, 80, 100), anchor="mm")
-    d.text((200, y), "玩家", font=font_normal, fill=(80, 80, 100), anchor="mm")
-    d.text((450, y), "成绩", font=font_normal, fill=(80, 80, 100), anchor="mm")
-    d.text((620, y), "FC/FS", font=font_normal, fill=(80, 80, 100), anchor="mm")
-    d.text((750, y), "评级", font=font_normal, fill=(80, 80, 100), anchor="mm")
+    d.text((180, y), "玩家", font=font_normal, fill=(80, 80, 100), anchor="mm")
+    d.text((390, y), "成绩", font=font_normal, fill=(80, 80, 100), anchor="mm")
+    d.text((520, y), "DX分", font=font_normal, fill=(80, 80, 100), anchor="mm")
+    d.text((650, y), "FC/FS", font=font_normal, fill=(80, 80, 100), anchor="mm")
+    d.text((775, y), "评级", font=font_normal, fill=(80, 80, 100), anchor="mm")
     _STATIC_HEADER_OVERLAY = overlay
 
     # 页脚覆盖层（分隔线 + 版权文字）
@@ -506,7 +507,7 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
     _icons_fc = {t: _get_icon(t, icon_size) for t in need_fc}
     _icons_fs = {t: _get_icon(t, icon_size) for t in need_fs}
     _icons_rate = {t: _get_icon(t, rate_icon_size) for t in need_rate}
-    fc_fs_x = 620
+    fc_fs_x = 650
     fc_fs_total_w = 2 * icon_size[0] + 5
 
     # ── 行渲染循环 ──
@@ -548,7 +549,7 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
         
         # 玩家昵称（根据长度调整字体和换行）
         nickname = data.get("nickname", "未知")
-        nickname_x = 200
+        nickname_x = 180
         nickname_y = y_offset + row_height // 2
         
         # 优化：预计算昵称长度
@@ -602,7 +603,20 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
         
         # 成绩文本（加粗显示）
         score_text = f"{achievements:.4f}%"
-        draw.text((450, y_offset + row_height // 2), score_text, font=font_normal, fill=(50, 50, 70), anchor="mm")
+        draw.text((390, y_offset + row_height // 2), score_text, font=font_normal, fill=(50, 50, 70), anchor="mm")
+
+        # DX 分数
+        try:
+            dx_score = int(data.get("dxScore", data.get("dx_score", 0)) or 0)
+        except (TypeError, ValueError):
+            dx_score = 0
+        draw.text(
+            (520, y_offset + row_height // 2),
+            str(dx_score),
+            font=font_normal,
+            fill=(50, 50, 70),
+            anchor="mm",
+        )
         
         # FC/FS 图标（使用预取图标）
         icon_x = fc_fs_x - fc_fs_total_w // 2
@@ -620,7 +634,7 @@ async def render_ranking_image(song: dict, ranking_data: List[Dict[str, Any]], a
         rate = data.get("rate", "").lower()
         rate_icon = _icons_rate.get(rate) if rate else None
         if rate_icon:
-            img.paste(rate_icon, (750 - rate_icon_size[0] // 2, y_offset + row_height // 2 - rate_icon_size[1] // 2), rate_icon)
+            img.paste(rate_icon, (775 - rate_icon_size[0] // 2, y_offset + row_height // 2 - rate_icon_size[1] // 2), rate_icon)
         
         y_offset += row_height
     
