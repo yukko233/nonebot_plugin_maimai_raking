@@ -770,13 +770,16 @@ async def _(bot: Bot, event: GroupMessageEvent):
     
     try:
         await api.load_music_data()
+        await api.load_alias_data_force()
+        await refresh_custom_alias_cache()
         
         # 检查是否成功加载
         if api.music_data:
             song_count = len(api.music_data)
+            alias_count = len(api.alias_data)
             await update_music_data.send(
                 f"✅ 歌曲数据更新完成！\n"
-                f"共加载 {song_count} 首歌曲"
+                f"共加载 {song_count} 首歌曲、{alias_count} 条别名"
             )
         else:
             await update_music_data.send("❌ 歌曲数据更新失败，未加载到任何歌曲数据！")
